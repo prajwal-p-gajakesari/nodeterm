@@ -1104,6 +1104,10 @@ const WORKTREE_SSH_NOTICE = 'Worktrees are not supported in SSH projects yet.'
  *  disabled state — the command palette, and any control-verb path that reaches the dialog. */
 const WORKTREE_NO_CWD_NOTICE =
   'This project has no folder, so it has no git repository to add a worktree to. Set one first (tab ⌄ → “Set folder…”).'
+/** The sentence twin of `WORKTREE_AGENT_RELAY_HINT` (lib/addMenuSpec), for the palette, which has no
+ *  disabled row: "New agent in new worktree…" in a shared (relay) tab. */
+const WORKTREE_AGENT_RELAY_NOTICE =
+  'An agent in a new worktree cannot be started from a shared tab: its start waits on the new worktree’s setup, which a shared tab cannot release.'
 const FOCUS_NO_TARGET_NOTICE = 'Select a terminal or agent node to focus.'
 /** `addAgentNode`'s up-front refusals, shared with `agentCreateRefusal` (one wording per reason). */
 const CANVAS_NOT_ACTIVE_NOTICE =
@@ -7377,7 +7381,7 @@ export function Canvas() {
       // Third reason, the agent variant only: in a shared tab the agent's held start could never be
       // released (WORKTREE_AGENT_RELAY_HINT). The menus grey the row; the palette cannot.
       if (opts?.withAgent && sessionForProject(projectId).source === 'relay') {
-        setNotice({ kind: 'error', text: `${WORKTREE_AGENT_RELAY_HINT}.` })
+        setNotice({ kind: 'error', text: WORKTREE_AGENT_RELAY_NOTICE })
         return
       }
       setWorktreeError(null)
@@ -7580,6 +7584,11 @@ export function Canvas() {
             // the node to mount.
             focus: (nodeId) => {
               setNodes((ns) => ns.map((n) => ({ ...n, selected: n.id === nodeId })))
+              // ⌘K reaches this over the kanban board, which covers a canvas that stays MOUNTED: a
+              // keyboard request would focus a terminal nobody can see, and typing would land in its
+              // shell. Same refusal as `nodeToRefocus`'s `boardOpen` — the user stays on the board,
+              // where the node is an ordinary session card, rather than being moved off it.
+              if (isGlobalKanbanOpen() || isKanbanOpen(useProjects.getState().activeProjectId)) return
               useTerminalFocus.getState().request(nodeId)
             }
           },
