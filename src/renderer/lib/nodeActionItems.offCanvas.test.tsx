@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_SETTINGS, type CanvasNodeState } from '@shared/types'
 import type { MenuItem } from '../components/ContextMenu'
 import { useAgentStatus } from '../state/agentStatus'
-import { presenceKey, resetAgentSessionsFactsForTests, useAgentSessionsFacts } from '../state/agentSessions'
+import { presenceKey, resetAgentSessionsFactsForTests, shadowKey, useAgentSessionsFacts } from '../state/agentSessions'
 import { useSettings } from '../state/settings'
 import { nodeStatesToFlow } from '../state/workspace'
 import {
@@ -114,7 +114,11 @@ describe('offCanvasNodeActionCtx — a card of a background project', () => {
 
   it('Share session to repo is a pane write: a background lane offers it and sends through ITS project', async () => {
     resetAgentSessionsFactsForTests()
-    useAgentSessionsFacts.setState({ presence: { [presenceKey('claude', undefined)]: 'present' }, repo: { '/bg': 'repo' } })
+    useAgentSessionsFacts.setState({
+      presence: { [presenceKey('claude', undefined)]: 'present' },
+      repo: { '/bg': 'repo' },
+      shadow: { [shadowKey('claude', '/bg')]: 'none' }
+    })
     const send = vi.fn(async () => {})
     const i = input([stored('a1', { agentId: 'claude' })], {
       shareSession: { projectCwd: '/bg', projectSsh: false, send }

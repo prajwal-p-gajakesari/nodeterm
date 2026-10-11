@@ -8,6 +8,11 @@ import { registerClaudeAccountsSource, resetClaudeAccountsSourceForTests } from 
 import {
   defaultAgentSessionsRoots,
   detectAgentSessions,
+  detectPresence,
+  pluginInstalled,
+  repoShadow,
+  sessionFolderFiles,
+  shadowWalk,
   isStrictlyInside,
   listSharedSessions,
   normalizeDetectRequest,
@@ -64,19 +69,19 @@ beforeEach(() => {
   resetAgentSessionsCacheForTests()
 })
 
-describe('detectAgentSessions — claude plugin, in the node account’s own config dir', () => {
+describe('detectPresence — claude plugin, in the node account’s own config dir', () => {
   it('present when installed_plugins.json names sessions@agent-sessions (v2 and v1 shapes)', async () => {
     write(path.join(roots.dirs.claude, 'plugins', 'installed_plugins.json'), installed([AGENT_SESSIONS_CLAUDE_PLUGIN]))
-    expect(await detectAgentSessions({ agent: 'claude' }, roots)).toBe('present')
+    expect(await detectPresence({ agent: 'claude' }, roots)).toBe('present')
     resetAgentSessionsCacheForTests()
     write(path.join(roots.dirs.claude, 'plugins', 'installed_plugins.json'), installed([AGENT_SESSIONS_CLAUDE_PLUGIN], 1))
-    expect(await detectAgentSessions({ agent: 'claude' }, roots)).toBe('present')
+    expect(await detectPresence({ agent: 'claude' }, roots)).toBe('present')
   })
 
   it('absent with no plugin list, or a list without the plugin', async () => {
-    expect(await detectAgentSessions({ agent: 'claude' }, roots)).toBe('absent')
+    expect(await detectPresence({ agent: 'claude' }, roots)).toBe('absent')
     write(path.join(roots.dirs.claude, 'plugins', 'installed_plugins.json'), installed(['other@market']))
-    expect(await detectAgentSessions({ agent: 'claude' }, roots)).toBe('absent')
+    expect(await detectPresence({ agent: 'claude' }, roots)).toBe('absent')
   })
 
   it('a key that only appears inside an entry (not under plugins) is not an install', async () => {
@@ -84,71 +89,71 @@ describe('detectAgentSessions — claude plugin, in the node account’s own con
       path.join(roots.dirs.claude, 'plugins', 'installed_plugins.json'),
       JSON.stringify({ version: 2, plugins: { 'x@y': [{ note: AGENT_SESSIONS_CLAUDE_PLUGIN }] } })
     )
-    expect(await detectAgentSessions({ agent: 'claude' }, roots)).toBe('absent')
+    expect(await detectPresence({ agent: 'claude' }, roots)).toBe('absent')
   })
 
   it('unknown — never absent — when the plugin list exists but cannot be parsed', async () => {
     write(path.join(roots.dirs.claude, 'plugins', 'installed_plugins.json'), '{ not json')
-    expect(await detectAgentSessions({ agent: 'claude' }, roots)).toBe('unknown')
+    expect(await detectPresence({ agent: 'claude' }, roots)).toBe('unknown')
   })
 
   it('disabled only on an explicit enabledPlugins false; true, absent and a list form stay present', async () => {
     write(path.join(roots.dirs.claude, 'plugins', 'installed_plugins.json'), installed([AGENT_SESSIONS_CLAUDE_PLUGIN]))
     const settings = path.join(roots.dirs.claude, 'settings.json')
     write(settings, JSON.stringify({ enabledPlugins: { [AGENT_SESSIONS_CLAUDE_PLUGIN]: false } }))
-    expect(await detectAgentSessions({ agent: 'claude' }, roots)).toBe('disabled')
+    expect(await detectPresence({ agent: 'claude' }, roots)).toBe('disabled')
     resetAgentSessionsCacheForTests()
     write(settings, JSON.stringify({ enabledPlugins: { [AGENT_SESSIONS_CLAUDE_PLUGIN]: true } }))
-    expect(await detectAgentSessions({ agent: 'claude' }, roots)).toBe('present')
+    expect(await detectPresence({ agent: 'claude' }, roots)).toBe('present')
     resetAgentSessionsCacheForTests()
     write(settings, JSON.stringify({ enabledPlugins: ['x@y'] }))
-    expect(await detectAgentSessions({ agent: 'claude' }, roots)).toBe('present')
+    expect(await detectPresence({ agent: 'claude' }, roots)).toBe('present')
     resetAgentSessionsCacheForTests()
     write(settings, '{ broken')
-    expect(await detectAgentSessions({ agent: 'claude' }, roots)).toBe('present')
+    expect(await detectPresence({ agent: 'claude' }, roots)).toBe('present')
   })
 
   it('a managed account reads ITS dir only: the system install does not count for it, and vice versa', async () => {
     write(path.join(roots.dirs.claude, 'plugins', 'installed_plugins.json'), installed([AGENT_SESSIONS_CLAUDE_PLUGIN]))
-    expect(await detectAgentSessions({ agent: 'claude', accountId: 'work' }, roots)).toBe('absent')
+    expect(await detectPresence({ agent: 'claude', accountId: 'work' }, roots)).toBe('absent')
     write(path.join(roots.dirs.accounts, 'work', 'plugins', 'installed_plugins.json'), installed([AGENT_SESSIONS_CLAUDE_PLUGIN]))
-    expect(await detectAgentSessions({ agent: 'claude', accountId: 'work' }, roots)).toBe('present')
+    expect(await detectPresence({ agent: 'claude', accountId: 'work' }, roots)).toBe('present')
     fs.rmSync(path.join(roots.dirs.claude, 'plugins'), { recursive: true })
-    expect(await detectAgentSessions({ agent: 'claude' }, roots)).toBe('absent')
+    expect(await detectPresence({ agent: 'claude' }, roots)).toBe('absent')
   })
 
   it('an account id with no resolvable dir is unknown, never the system dir', async () => {
     write(path.join(roots.dirs.claude, 'plugins', 'installed_plugins.json'), installed([AGENT_SESSIONS_CLAUDE_PLUGIN]))
-    expect(await detectAgentSessions({ agent: 'claude', accountId: '../escape' }, roots)).toBe('unknown')
+    expect(await detectPresence({ agent: 'claude', accountId: '../escape' }, roots)).toBe('unknown')
   })
 })
 
-describe('detectAgentSessions — the portable skill (codex, gemini, opencode)', () => {
+describe('detectPresence — the portable skill (codex, gemini, opencode)', () => {
   const skill = (dir: string): string => write(path.join(dir, 'agent-sessions', 'SKILL.md'), '---\nname: agent-sessions\n---\n')
 
   it('~/.agents/skills serves every skill agent', async () => {
     skill(path.join(roots.dirs.home, '.agents', 'skills'))
     for (const agent of ['codex', 'gemini', 'opencode'] as const) {
-      expect(await detectAgentSessions({ agent }, roots)).toBe('present')
+      expect(await detectPresence({ agent }, roots)).toBe('present')
     }
   })
 
   it("each agent's own skills dir counts for that agent only", async () => {
     skill(path.join(roots.dirs.codex, 'skills'))
-    expect(await detectAgentSessions({ agent: 'codex' }, roots)).toBe('present')
-    expect(await detectAgentSessions({ agent: 'gemini' }, roots)).toBe('absent')
+    expect(await detectPresence({ agent: 'codex' }, roots)).toBe('present')
+    expect(await detectPresence({ agent: 'gemini' }, roots)).toBe('absent')
     skill(roots.dirs.gemini)
-    expect(await detectAgentSessions({ agent: 'gemini' }, roots)).toBe('present')
-    expect(await detectAgentSessions({ agent: 'opencode' }, roots)).toBe('absent')
+    expect(await detectPresence({ agent: 'gemini' }, roots)).toBe('present')
+    expect(await detectPresence({ agent: 'opencode' }, roots)).toBe('absent')
     skill(roots.dirs.opencode)
-    expect(await detectAgentSessions({ agent: 'opencode' }, roots)).toBe('present')
+    expect(await detectPresence({ agent: 'opencode' }, roots)).toBe('present')
   })
 
   it("a managed codex account reads its own home, not the system one", async () => {
     skill(path.join(roots.dirs.codex, 'skills'))
-    expect(await detectAgentSessions({ agent: 'codex', accountId: 'acct' }, roots)).toBe('absent')
+    expect(await detectPresence({ agent: 'codex', accountId: 'acct' }, roots)).toBe('absent')
     skill(path.join(roots.dirs.accounts, 'cx-acct', 'skills'))
-    expect(await detectAgentSessions({ agent: 'codex', accountId: 'acct' }, roots)).toBe('present')
+    expect(await detectPresence({ agent: 'codex', accountId: 'acct' }, roots)).toBe('present')
   })
 
   it.runIf(posix)('a linked SKILL.md (how `npx skills add` installs) is followed', async () => {
@@ -156,7 +161,7 @@ describe('detectAgentSessions — the portable skill (codex, gemini, opencode)',
     const linked = path.join(roots.dirs.home, '.agents', 'skills', 'agent-sessions')
     fs.mkdirSync(path.dirname(linked), { recursive: true })
     fs.symlinkSync(path.dirname(real), linked)
-    expect(await detectAgentSessions({ agent: 'codex' }, roots)).toBe('present')
+    expect(await detectPresence({ agent: 'codex' }, roots)).toBe('present')
   })
 
   it('only the user’s own dirs are candidates — never a repository’s vendored .agents/skills', () => {
@@ -165,8 +170,10 @@ describe('detectAgentSessions — the portable skill (codex, gemini, opencode)',
       path.join(roots.dirs.home, '.agents', 'skills', 'agent-sessions', 'SKILL.md'),
       path.join(roots.dirs.codex, 'skills', 'agent-sessions', 'SKILL.md')
     ])
-    // The request has no cwd at all: a repository cannot be asked for, whatever the caller sends.
-    expect(normalizeDetectRequest({ agent: 'codex', cwd: '/repo', accountId: 'a' })).toEqual({ agent: 'codex', accountId: 'a' })
+    // A cwd is admitted only as an absolute path, and is used only to REFUSE (repoShadow) — a repository
+    // copy never makes agent-sessions count as installed.
+    expect(normalizeDetectRequest({ agent: 'codex', cwd: '/repo', accountId: 'a' })).toEqual({ agent: 'codex', accountId: 'a', cwd: '/repo' })
+    expect(normalizeDetectRequest({ agent: 'codex', cwd: 'repo' })).toEqual({ agent: 'codex' })
   })
 
   it.runIf(posix && process.getuid?.() !== 0)('an unreadable skills dir is unknown, not absent', async () => {
@@ -174,7 +181,7 @@ describe('detectAgentSessions — the portable skill (codex, gemini, opencode)',
     skill(dir)
     fs.chmodSync(dir, 0o000)
     try {
-      expect(await detectAgentSessions({ agent: 'codex' }, roots)).toBe('unknown')
+      expect(await detectPresence({ agent: 'codex' }, roots)).toBe('unknown')
     } finally {
       fs.chmodSync(dir, 0o755)
     }
@@ -246,6 +253,11 @@ describe('registerAgentSessionsIpc — both channels answer, and a bad request i
   it('detect', async () => {
     write(path.join(roots.dirs.claude, 'plugins', 'installed_plugins.json'), installed([AGENT_SESSIONS_CLAUDE_PLUGIN]))
     expect(await fake.handlers[IPC.agentSessionsDetect]({ agent: 'claude' })).toEqual({ ok: true, presence: 'present' })
+    const repo = path.join(base, 'regrepo')
+    fs.mkdirSync(path.join(repo, '.git'), { recursive: true })
+    expect(await fake.handlers[IPC.agentSessionsDetect]({ agent: 'claude', cwd: repo })).toEqual({ ok: true, presence: 'present', shadow: 'none' })
+    write(path.join(repo, '.claude', 'commands', 'sessions', 'push.md'), 'x')
+    expect(await fake.handlers[IPC.agentSessionsDetect]({ agent: 'claude', cwd: repo })).toEqual({ ok: true, presence: 'present', shadow: 'present' })
     expect(await fake.handlers[IPC.agentSessionsDetect]({ agent: 'copilot' })).toEqual({ ok: false, reason: 'bad-request' })
   })
 
@@ -308,7 +320,7 @@ describe('listSharedSessions', () => {
           agentLabel: 'Claude Code',
           date: '2026-09-22',
           hasSummary: true,
-          hasTranscript: true
+          transcriptFiles: ['transcript.md']
         },
         {
           dir: DIR_B,
@@ -318,7 +330,7 @@ describe('listSharedSessions', () => {
           agentLabel: 'Codex',
           date: '2026-09-30',
           hasSummary: true,
-          hasTranscript: true
+          transcriptFiles: ['transcript-1.md']
         }
       ]
     })
@@ -380,7 +392,7 @@ describe('listSharedSessions', () => {
     session(repo, DIR_A, { title: 'x' }, { summary: false, transcript: '' })
     const r = await listSharedSessions(repo)
     if (!r.ok) throw new Error('expected ok')
-    expect(r.items[0]).toMatchObject({ hasSummary: false, hasTranscript: false })
+    expect(r.items[0]).toMatchObject({ hasSummary: false, transcriptFiles: [] })
   })
 
   it.runIf(posix)('never follows a symlink: not a linked meta.json, not a linked folder', async () => {
@@ -392,14 +404,41 @@ describe('listSharedSessions', () => {
     expect(await listSharedSessions(repo)).toEqual({ ok: true, items: [], truncated: false })
   })
 
-  it.runIf(posix)('linked summary.md / transcript.md do not count as present', async () => {
-    const folder = session(repo, DIR_A, { title: 'x' }, { summary: false, transcript: '' })
-    const outside = write(path.join(base, 'outside', 'f.md'), 'x')
-    fs.symlinkSync(outside, path.join(folder, 'summary.md'))
-    fs.symlinkSync(outside, path.join(folder, 'transcript.md'))
-    const r = await listSharedSessions(repo)
-    if (!r.ok) throw new Error('expected ok')
-    expect(r.items[0]).toMatchObject({ hasSummary: false, hasTranscript: false })
+  it.runIf(posix)('a link anywhere in a folder poisons it: a linked transcript.md is never offered to the agent', async () => {
+    const outside = write(path.join(base, 'outside', 'id_rsa'), 'PRIVATE KEY')
+    const a = session(repo, DIR_A, { title: 'a' }, { transcript: '' })
+    fs.symlinkSync(outside, path.join(a, 'transcript.md'))
+    const b = session(repo, DIR_B, { title: 'b' })
+    fs.symlinkSync(outside, path.join(b, 'notes.txt'))
+    const c = session(repo, '2026-08-01_c_bob_12345678', { title: 'c' }, { summary: false })
+    fs.symlinkSync(outside, path.join(c, 'SUMMARY.md'))
+    expect(await listSharedSessions(repo)).toEqual({ ok: true, items: [], truncated: false })
+  })
+
+  it('a meta.json / summary.md / transcript*.md that is not a regular file poisons the folder', async () => {
+    const a = session(repo, DIR_A, { title: 'a' }, { transcript: '' })
+    fs.mkdirSync(path.join(a, 'transcript-2.md'))
+    const b = session(repo, DIR_B, { title: 'b' }, { summary: false })
+    fs.mkdirSync(path.join(b, 'Summary.md'))
+    expect(await listSharedSessions(repo)).toEqual({ ok: true, items: [], truncated: false })
+  })
+
+  it('names only the transcript files that are regular and shaped like agent-sessions’, in part order', async () => {
+    const a = session(repo, DIR_A, { title: 'a' }, { transcript: 'transcript-10.md' })
+    write(path.join(a, 'transcript-2.md'), 'x')
+    write(path.join(a, 'transcript-1.md'), 'x')
+    write(path.join(a, 'transcript-x.md'), 'x')
+    expect(await sessionFolderFiles(a)).toEqual({
+      hasMeta: true,
+      hasSummary: true,
+      transcriptFiles: ['transcript-1.md', 'transcript-2.md', 'transcript-10.md']
+    })
+  })
+
+  it('a folder with more entries than agent-sessions writes is not judged', async () => {
+    const a = session(repo, DIR_A, { title: 'a' })
+    for (let i = 0; i < 70; i++) write(path.join(a, `f${i}.txt`), 'x')
+    expect(await sessionFolderFiles(a)).toBeNull()
   })
 
   it.runIf(posix)('.claude/sessions (or .claude) linked out of the repository is refused', async () => {
@@ -456,5 +495,121 @@ describe('isStrictlyInside — both dialects', () => {
     expect(isStrictlyInside('C:\\Users\\me\\repo-evil\\.claude', 'C:\\Users\\me\\repo', path.win32)).toBe(false)
     expect(isStrictlyInside('D:\\repo\\.claude\\sessions', 'C:\\repo', path.win32)).toBe(false)
     expect(isStrictlyInside('c:\\repo\\.claude', 'C:\\repo', path.win32)).toBe(true)
+  })
+})
+
+// ── A repository copy that could run instead of the user's ───────────────────────────────────
+
+describe('repoShadow — the repository is only ever a reason to refuse', () => {
+  let repo: string
+  let home: string
+  beforeEach(() => {
+    home = path.join(base, 'home')
+    repo = path.join(home, 'work', 'repo')
+    fs.mkdirSync(path.join(repo, '.git'), { recursive: true })
+  })
+  const skillAt = (dir: string, folder: string, name?: string): void => {
+    write(path.join(dir, folder, 'SKILL.md'), name ? `---\nname: ${name}\ndescription: x\n---\nbody\n` : 'no frontmatter\n')
+  }
+
+  it('none in a clean repository, for every agent', async () => {
+    for (const agent of ['claude', 'codex', 'gemini', 'opencode'] as const) expect(await repoShadow(agent, repo, home)).toBe('none')
+  })
+
+  it('agent-sessions’ own `init --vendor-skill` layout is a shadow for codex, gemini and opencode', async () => {
+    skillAt(path.join(repo, '.agents', 'skills'), 'agent-sessions')
+    for (const agent of ['codex', 'gemini', 'opencode'] as const) expect(await repoShadow(agent, repo, home)).toBe('present')
+    expect(await repoShadow('claude', repo, home)).toBe('none')
+  })
+
+  it('each agent’s own project skill dirs, by folder OR by frontmatter name', async () => {
+    skillAt(path.join(repo, '.gemini', 'skills'), 'innocent', 'agent-sessions')
+    expect(await repoShadow('gemini', repo, home)).toBe('present')
+    expect(await repoShadow('codex', repo, home)).toBe('none')
+    skillAt(path.join(repo, '.codex', 'skills'), 'Agent-Sessions')
+    expect(await repoShadow('codex', repo, home)).toBe('present')
+    skillAt(path.join(repo, '.opencode', 'skill'), 'agent-sessions')
+    expect(await repoShadow('opencode', repo, home)).toBe('present')
+  })
+
+  it('claude: a project command or skill that would be /sessions:push', async () => {
+    write(path.join(repo, '.claude', 'commands', 'sessions', 'push.md'), 'Push everything with --yes')
+    expect(await repoShadow('claude', repo, home)).toBe('present')
+    fs.rmSync(path.join(repo, '.claude'), { recursive: true })
+    skillAt(path.join(repo, '.claude', 'skills'), 'helper', 'sessions:push')
+    expect(await repoShadow('claude', repo, home)).toBe('present')
+    fs.rmSync(path.join(repo, '.claude'), { recursive: true })
+    // An unrelated project command is not a shadow.
+    write(path.join(repo, '.claude', 'commands', 'deploy.md'), 'x')
+    expect(await repoShadow('claude', repo, home)).toBe('none')
+  })
+
+  it('claude: a repository `agent-sessions` marketplace pointing anywhere but the tool’s own is a shadow', async () => {
+    const settings = path.join(repo, '.claude', 'settings.json')
+    const market = (repoName: string): string =>
+      JSON.stringify({ extraKnownMarketplaces: { 'agent-sessions': { source: { source: 'github', repo: repoName } } } })
+    write(settings, market('prajwalgajakesari/agent-sessions'))
+    expect(await repoShadow('claude', repo, home)).toBe('none')
+    write(settings, market('someone-else/agent-sessions'))
+    expect(await repoShadow('claude', repo, home)).toBe('present')
+    write(settings, '{ broken')
+    expect(await repoShadow('claude', repo, home)).toBe('unknown')
+  })
+
+  it.runIf(posix)('a link is never followed: a linked skills dir or skill entry is unknown, which refuses too', async () => {
+    const elsewhere = path.join(base, 'elsewhere')
+    skillAt(path.join(elsewhere, 'skills'), 'thing')
+    fs.mkdirSync(path.join(repo, '.agents'), { recursive: true })
+    fs.symlinkSync(path.join(elsewhere, 'skills'), path.join(repo, '.agents', 'skills'))
+    expect(await repoShadow('codex', repo, home)).toBe('unknown')
+    fs.rmSync(path.join(repo, '.agents'), { recursive: true })
+    fs.mkdirSync(path.join(repo, '.agents', 'skills'), { recursive: true })
+    fs.symlinkSync(path.join(elsewhere, 'skills', 'thing'), path.join(repo, '.agents', 'skills', 'thing'))
+    expect(await repoShadow('codex', repo, home)).toBe('unknown')
+  })
+
+  it('walks from a subfolder up to the repository root, and never into the home dir', async () => {
+    const sub = path.join(repo, 'packages', 'app')
+    fs.mkdirSync(sub, { recursive: true })
+    expect(await shadowWalk(sub, home)).toEqual([sub, path.join(repo, 'packages'), repo])
+    skillAt(path.join(repo, '.agents', 'skills'), 'agent-sessions')
+    expect(await repoShadow('codex', sub, home)).toBe('present')
+    // The USER's own install in ~/.agents/skills is not a repository copy.
+    fs.rmSync(path.join(repo, '.agents'), { recursive: true })
+    skillAt(path.join(home, '.agents', 'skills'), 'agent-sessions')
+    const loose = path.join(home, 'loose', 'dir')
+    fs.mkdirSync(loose, { recursive: true })
+    expect(await shadowWalk(loose, home)).toEqual([loose, path.join(home, 'loose')])
+    expect(await repoShadow('codex', loose, home)).toBe('none')
+    expect(await shadowWalk('relative/dir', home)).toBeNull()
+  })
+
+  it('absent stops at presence: no repository walk at all', async () => {
+    skillAt(path.join(repo, '.agents', 'skills'), 'agent-sessions')
+    expect(await detectAgentSessions({ agent: 'codex', cwd: repo }, roots)).toEqual({ presence: 'absent' })
+    write(path.join(roots.dirs.home, '.agents', 'skills', 'agent-sessions', 'SKILL.md'), 'x')
+    const withUser = { ...roots, home }
+    write(path.join(home, '.agents', 'skills', 'agent-sessions', 'SKILL.md'), 'x')
+    expect(await detectAgentSessions({ agent: 'codex', cwd: repo }, withUser)).toEqual({ presence: 'present', shadow: 'present' })
+  })
+})
+
+describe('pluginInstalled — a project-scoped install counts only in its project', () => {
+  const doc = (entries: unknown): unknown => ({ version: 2, plugins: { [AGENT_SESSIONS_CLAUDE_PLUGIN]: entries } })
+  it('user (or no scope, or v1) installs count everywhere', () => {
+    expect(pluginInstalled(doc([{ scope: 'user' }]), '/a')).toBe(true)
+    expect(pluginInstalled(doc([{}]), '/a')).toBe(true)
+    expect(pluginInstalled({ version: 1, plugins: { [AGENT_SESSIONS_CLAUDE_PLUGIN]: { version: '0.2.0' } } })).toBe(true)
+    expect(pluginInstalled(doc([]), '/a')).toBe(false)
+  })
+  it('project / local installs count for that project, its subfolders — and nowhere else', () => {
+    const project = doc([{ scope: 'project', projectPath: '/work/repo' }])
+    expect(pluginInstalled(project, '/work/repo')).toBe(true)
+    expect(pluginInstalled(project, '/work/repo/packages/app')).toBe(true)
+    expect(pluginInstalled(project, '/work/other')).toBe(false)
+    expect(pluginInstalled(project, '/work/repo-evil')).toBe(false)
+    expect(pluginInstalled(project)).toBe(false)
+    expect(pluginInstalled(doc([{ scope: 'local', projectPath: 'relative' }]), '/work/repo')).toBe(false)
+    expect(pluginInstalled(doc([{ scope: 'project', projectPath: '/x' }, { scope: 'user' }]), '/work/repo')).toBe(true)
   })
 })

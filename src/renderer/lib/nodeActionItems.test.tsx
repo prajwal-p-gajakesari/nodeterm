@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_SETTINGS } from '@shared/types'
 import type { MenuItem } from '../components/ContextMenu'
 import { useAgentStatus } from '../state/agentStatus'
-import { presenceKey, resetAgentSessionsFactsForTests, useAgentSessionsFacts } from '../state/agentSessions'
+import { presenceKey, resetAgentSessionsFactsForTests, shadowKey, useAgentSessionsFacts } from '../state/agentSessions'
 import { useSettings } from '../state/settings'
 import type { CanvasNode } from '../state/workspace'
 import {
@@ -248,8 +248,13 @@ describe('buildNodeActionItems — filters', () => {
 
 describe('Share session to repo — the agent-sessions row (canvas menu and board cards)', () => {
   const LABEL = 'Share session to repo'
-  const facts = (presence: Record<string, string>, repo: Record<string, string> = { '/repo': 'repo' }): void =>
-    useAgentSessionsFacts.setState({ presence, repo } as never)
+  const facts = (
+    presence: Record<string, string>,
+    repo: Record<string, string> = { '/repo': 'repo' },
+    shadow: Record<string, string> = Object.fromEntries(
+      ['claude', 'codex', 'opencode', 'gemini'].map((a) => [shadowKey(a as never, '/repo'), 'none'])
+    )
+  ): void => useAgentSessionsFacts.setState({ presence, repo, shadow } as never)
   beforeEach(() => {
     resetAgentSessionsFactsForTests()
     facts({ [presenceKey('claude', undefined)]: 'present', [presenceKey('codex', 'acct1')]: 'present' })
@@ -274,15 +279,36 @@ describe('Share session to repo — the agent-sessions row (canvas menu and boar
     expect(send).toHaveBeenCalledWith('a1')
   })
 
-  it('the account is the node’s own: a managed codex account reads its own presence', () => {
-    useAgentStatus.setState({ byId: { c1: { state: 'done' } } } as never)
-    const ctx = fakeCtx([term('c1', { agentId: 'codex', accountId: 'acct1' }), term('c2', { agentId: 'codex' })])
-    expect(disabledOf(buildNodeActionItems(['c1'], undefined, ctx), LABEL)).toBe(false)
-    // The system codex account was never detected here: "Checking…", not the managed account's answer.
-    expect(hintOf(buildNodeActionItems(['c2'], undefined, ctx), LABEL)).toMatch(/^Checking whether agent-sessions/)
+  it('INERT when agent-sessions is absent or not read yet: no row, not even a disabled one', () => {
+    for (const presence of [{ [presenceKey('claude', undefined)]: 'absent' }, {}]) {
+      facts(presence)
+      for (const over of [{}, { sessionSource: 'relay' as const }]) {
+        const items = buildNodeActionItems(['a1'], undefined, fakeCtx([term('a1', { agentId: 'claude' })], over))
+        expect(row(items, LABEL)).toBeUndefined()
+      }
+    }
   })
 
-  it('is disabled with the reason — never silently missing — wherever it cannot run', () => {
+  it('the account is the node’s own: a managed codex account reads its own presence', () => {
+    useAgentStatus.setState({ byId: { c1: { state: 'done', sessionId: 's' }, c2: { state: 'done', sessionId: 's' } } } as never)
+    const ctx = fakeCtx([term('c1', { agentId: 'codex', accountId: 'acct1' }), term('c2', { agentId: 'codex' })])
+    expect(disabledOf(buildNodeActionItems(['c1'], undefined, ctx), LABEL)).toBe(false)
+    // The system codex account was never detected here: no row for it.
+    expect(row(buildNodeActionItems(['c2'], undefined, ctx), LABEL)).toBeUndefined()
+  })
+
+  it('the repository check is the NODE’s cwd: a worktree node is judged where it runs', () => {
+    facts(
+      { [presenceKey('claude', undefined)]: 'present' },
+      { '/repo': 'repo' },
+      { [shadowKey('claude', '/repo')]: 'none', [shadowKey('claude', '/wt')]: 'present' }
+    )
+    const items = buildNodeActionItems(['a1'], undefined, fakeCtx([term('a1', { agentId: 'claude', cwd: '/wt' })]))
+    expect(disabledOf(items, LABEL)).toBe(true)
+    expect(hintOf(items, LABEL)).toMatch(/ships its own agent-sessions skill or a \/sessions:push command/)
+  })
+
+  it('is disabled with the reason wherever it cannot run (once agent-sessions is known to be there)', () => {
     const at = (over: Partial<NodeActionCtx>, data: Record<string, unknown> = {}): string | undefined => {
       const items = buildNodeActionItems(['a1'], undefined, fakeCtx([term('a1', { agentId: 'claude', ...data })], over))
       expect(disabledOf(items, LABEL)).toBe(true)
@@ -297,16 +323,20 @@ describe('Share session to repo — the agent-sessions row (canvas menu and boar
     expect(at(share({ projectCwd: undefined }))).toMatch(/has no folder/)
     facts({ [presenceKey('claude', undefined)]: 'present' }, { '/repo': 'not-repo' })
     expect(at({})).toBe('This project’s folder is not a git repository.')
-    facts({ [presenceKey('claude', undefined)]: 'absent' })
-    expect(at({})).toContain('/plugin install sessions@agent-sessions')
     facts({ [presenceKey('claude', undefined)]: 'disabled' })
     expect(at({})).toMatch(/switched off/)
+    facts({ [presenceKey('claude', undefined)]: 'unknown' })
+    expect(at({})).toMatch(/could not be confirmed/)
+    facts({ [presenceKey('claude', undefined)]: 'present' }, { '/repo': 'repo' }, {})
+    expect(at({})).toMatch(/^Checking this repository/)
     facts({ [presenceKey('claude', undefined)]: 'present' })
+    useAgentStatus.setState({ byId: { a1: { state: 'done' } } } as never)
+    expect(at({})).toBe('Nothing to share yet — this session has not reported an id.')
     useAgentStatus.setState({ byId: { a1: { state: 'working', sessionId: 's1' } } } as never)
     expect(at({})).toMatch(/is working — share once its turn is done/)
     useAgentStatus.setState({ byId: { a1: { state: 'waiting', sessionId: 's1' } } } as never)
     expect(at({})).toMatch(/waiting for an answer/)
-    useAgentStatus.setState({ byId: { a1: { state: 'done', hibernated: true } } } as never)
+    useAgentStatus.setState({ byId: { a1: { state: 'done', sessionId: 's1', hibernated: true } } } as never)
     expect(at({})).toMatch(/asleep/)
   })
 

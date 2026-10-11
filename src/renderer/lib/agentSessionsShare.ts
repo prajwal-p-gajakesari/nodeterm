@@ -2,32 +2,39 @@
 //
 // The row TYPES the agent's own agent-sessions push command into the node's pane, exactly as the
 // user would (`@shared/agent-sessions` owns the text: a constant per agent, never `--yes`, never a
-// title). The agent then writes its summary, renders the redacted transcript and shows a preview;
-// nothing is committed or pushed until the user says yes INSIDE the session. So the one thing this
-// module must get right is the same thing the ⌘M composer must get right — never type into a pane
-// that is not an idle agent at its prompt — and it does that with the composer's own gates, in the
-// composer's order (`hostChatSend` is the other caller of the same chain):
+// title). What runs is then the AGENT's resolution of that name, and the summary, the redacted
+// preview and the yes/no before committing are the agent-sessions SKILL's — nodeterm does not
+// enforce them. So the row refuses a repository that ships its own copy (`RepoShadow`), and it is
+// INERT when agent-sessions is absent: no row at all, not even a disabled one.
+//
+// Beyond that, the one thing this module must get right is the same thing the ⌘M composer must get
+// right — never type into a pane that is not an idle agent at its prompt — and it does that with the
+// composer's own gates, in the composer's order (`hostChatSend` is the other caller of the chain):
 //
 //   1. `chatSendRefusal` at click time (working / dialog / asleep / paused / dropped / exited —
 //      `agentProcessInPane` ranks above the state), plus a held permission or question, which the
-//      phone's send refuses too: text + Enter into a dialog ANSWERS it.
-//   2. agent-sessions re-detected: a row built from a stale "present" never types a command the
-//      agent no longer has.
+//      phone's send refuses too: text + Enter into a dialog ANSWERS it. And a session id: an agent
+//      that has reported none has no conversation to share.
+//   2. agent-sessions re-detected, with the repository re-checked for its own copy: a row built from
+//      a stale answer never types.
 //   3. `chatPaneRefusal`: for an agent that announces no quit (codex, opencode), the kernel's word
 //      that the CLI still owns the pane — otherwise the command would run in a SHELL.
-//   4. `pty.sendChatPrompt`: core reads claude's screen first and refuses (nothing written) when its
+//   4. Step 1 again: the round trips above take time, and a turn or a dialog may have started.
+//   5. `pty.sendChatPrompt`: core reads claude's screen first and refuses (nothing written) when its
 //      own dialog owns the keyboard; claude's text is TYPED (TYPED_INPUT), every other agent's pasted.
 //
 // No queueing: unlike a chat message, a push command mid-turn is refused, not queued.
 import type { AgentId } from '@shared/agents/config'
 import {
   agentSessionsAgentOf,
-  agentSessionsInstallHint,
+  agentSessionsPresenceText,
   agentSessionsPushCommand,
   isSafeSharedSessionDir,
+  repoShadowText,
   type AgentSessionsAgent,
   type AgentSessionsDetectResult,
   type AgentSessionsPresence,
+  type RepoShadow,
   type SharedSession
 } from '@shared/agent-sessions'
 import { isChatPromptBlocked, TEXT_NOT_SUBMITTED, type ChatPromptResult } from '@shared/text-delivery'
@@ -38,7 +45,7 @@ import type { RepoState } from '../state/agentSessions'
 export const SHARE_SESSION_LABEL = 'Share session to repo'
 
 /** The status slice the gates read (`AgentNodeStatus` fits it). */
-export type ShareGateStatus = ChatGateStatus & { held?: unknown }
+export type ShareGateStatus = ChatGateStatus & { held?: unknown; sessionId?: string }
 
 /** Why the row is off, in the order the reasons are checked: the permanent ones first, so a node
  *  whose project can never share does not first say "busy" and later "not a repository". */
@@ -47,7 +54,9 @@ export type ShareRowRefusal =
   | { kind: 'ssh' }
   | { kind: 'no-folder' }
   | { kind: 'repo'; state: RepoState | undefined }
-  | { kind: 'presence'; agent: AgentSessionsAgent; presence: AgentSessionsPresence | undefined }
+  | { kind: 'presence'; agent: AgentSessionsAgent; presence: Exclude<AgentSessionsPresence, 'present' | 'absent'> }
+  | { kind: 'shadow'; shadow: RepoShadow | undefined }
+  | { kind: 'no-session' }
   | { kind: 'state'; refusal: Exclude<ChatSendRefusal, null> }
 
 export interface ShareRowInput {
@@ -58,23 +67,41 @@ export interface ShareRowInput {
   remote: boolean
   projectCwd: string | undefined
   repo: RepoState | undefined
+  /** agent-sessions in the user's own config for this agent + account; undefined = not read yet. */
   presence: AgentSessionsPresence | undefined
+  /** A repository copy for this agent at the node's cwd; undefined = not read yet. */
+  shadow: RepoShadow | undefined
   status: ShareGateStatus
 }
 
-/** `null` = no row at all (an agent agent-sessions cannot push from, or not an agent). */
+/** The agent-state gate both the row and the click use: the composer's, a held ticket, and a
+ *  session id to share. `null` = may type. */
+export function shareStateRefusal(agentId: AgentId, st: ShareGateStatus): ShareRowRefusal | null {
+  const state = chatSendRefusal(agentId, st)
+  if (state !== null) return { kind: 'state', refusal: state }
+  if (st.held) return { kind: 'state', refusal: 'dialog' }
+  if (!st.sessionId) return { kind: 'no-session' }
+  return null
+}
+
+/**
+ * `null` = no row at all: an agent agent-sessions cannot push from, or agent-sessions NOT KNOWN TO BE
+ * INSTALLED for this agent + account (absent, or not read yet — a user without the tool never sees
+ * the row, not even disabled, and is never shown how to get it). Otherwise the row, disabled with the
+ * first reason that applies: the permanent ones first, so a node whose project can never share does
+ * not first say "busy" and later "not a repository".
+ */
 export function shareRowState(i: ShareRowInput): { refusal: ShareRowRefusal | null } | null {
   const agent = agentSessionsAgentOf(i.agentId)
   if (!agent || !i.agentId) return null
+  if (i.presence === undefined || i.presence === 'absent') return null
   if (i.relay) return { refusal: { kind: 'relay' } }
   if (i.remote) return { refusal: { kind: 'ssh' } }
   if (!i.projectCwd) return { refusal: { kind: 'no-folder' } }
   if (i.repo !== 'repo') return { refusal: { kind: 'repo', state: i.repo } }
   if (i.presence !== 'present') return { refusal: { kind: 'presence', agent, presence: i.presence } }
-  const state = chatSendRefusal(i.agentId, i.status)
-  if (state !== null) return { refusal: { kind: 'state', refusal: state } }
-  if (i.status.held) return { refusal: { kind: 'state', refusal: 'dialog' } }
-  return { refusal: null }
+  if (i.shadow !== 'none') return { refusal: { kind: 'shadow', shadow: i.shadow } }
+  return { refusal: shareStateRefusal(i.agentId, i.status) }
 }
 
 /** The sentence a disabled row carries (its hover hint). */
@@ -93,9 +120,11 @@ export function shareRefusalText(r: ShareRowRefusal, agentLabel: string): string
           ? 'Could not check whether this project is a git repository.'
           : 'This project’s folder is not a git repository.'
     case 'presence':
-      return r.presence === undefined
-        ? 'Checking whether agent-sessions is installed…'
-        : agentSessionsInstallHint(r.agent, r.presence)
+      return agentSessionsPresenceText(r.agent, r.presence)
+    case 'shadow':
+      return repoShadowText(r.shadow)
+    case 'no-session':
+      return 'Nothing to share yet — this session has not reported an id.'
     case 'state':
       switch (r.refusal) {
         case 'working':
@@ -114,16 +143,17 @@ export function shareRefusalText(r: ShareRowRefusal, agentLabel: string): string
   }
 }
 
-/** The enabled row's hint: what the click does, and that nothing leaves without the user's yes. */
+/** The enabled row's hint: what the click types, and whose confirmation follows — the skill's, in
+ *  the session (nodeterm does not hold the push back itself). */
 export function shareRowHint(agentId: AgentId): string {
   const command = agentSessionsPushCommand(agentId) ?? ''
   const typed = command.startsWith('/') || command.startsWith('$') ? `Types ${command}` : 'Asks the agent to use agent-sessions'
-  return `${typed} in this session: it writes a summary and shows a redacted preview. Nothing is committed or pushed until you confirm there.`
+  return `${typed} in this session. agent-sessions writes a summary, shows a redacted preview and asks you there before it commits and pushes.`
 }
 
 /** The notice after the command was typed. */
 export function shareSentNotice(agentLabel: string): string {
-  return `Asked ${agentLabel} to share this session — review the preview in the session, then confirm there to commit and push.`
+  return `Asked ${agentLabel} to share this session with agent-sessions — review its preview in the session and answer it there.`
 }
 
 export type ShareOutcome =
@@ -139,6 +169,8 @@ export type ShareOutcome =
 export interface ShareSendDeps {
   /** The node's agent status, read at CLICK time. */
   status(): ShareGateStatus
+  /** Re-detect agent-sessions for the node's agent + account, WITH the node's cwd so core re-checks
+   *  the repository for its own copy. */
   detect(agent: AgentSessionsAgent): Promise<AgentSessionsDetectResult>
   paneRefusal(): Promise<ChatPaneRefusal>
   sendChatPrompt(text: string): Promise<ChatPromptResult>
@@ -160,18 +192,20 @@ export async function sendShareCommand(
   if (inFlight.has(nodeId)) return { kind: 'busy' }
   inFlight.add(nodeId)
   try {
-    const st = deps.status()
-    const state = chatSendRefusal(agentId, st)
-    if (state !== null) return { kind: 'refused', text: shareRefusalText({ kind: 'state', refusal: state }, agentLabel) }
-    if (st.held) return { kind: 'refused', text: shareRefusalText({ kind: 'state', refusal: 'dialog' }, agentLabel) }
+    const before = shareStateRefusal(agentId, deps.status())
+    if (before) return { kind: 'refused', text: shareRefusalText(before, agentLabel) }
     let presence: AgentSessionsPresence
+    let shadow: RepoShadow | undefined
     try {
       const r = await deps.detect(agent)
       presence = r.ok ? r.presence : 'unknown'
+      shadow = r.ok ? r.shadow : undefined
     } catch {
       presence = 'unknown'
     }
-    if (presence !== 'present') return { kind: 'refused', text: agentSessionsInstallHint(agent, presence) }
+    if (presence !== 'present') return { kind: 'refused', text: agentSessionsPresenceText(agent, presence) }
+    // No answer about the repository is no clearance: only a definite `none` lets the command through.
+    if (shadow !== 'none') return { kind: 'refused', text: repoShadowText(shadow ?? 'unknown') }
     let pane: ChatPaneRefusal
     try {
       pane = await deps.paneRefusal()
@@ -187,6 +221,10 @@ export async function sendShareCommand(
             : `Could not confirm ${agentLabel} is running in this terminal — nothing was typed.`
       }
     }
+    // Again, right before typing: the reads above took round trips, and a turn, a permission prompt
+    // or a hibernation may have started meanwhile.
+    const after = shareStateRefusal(agentId, deps.status())
+    if (after) return { kind: 'refused', text: shareRefusalText(after, agentLabel) }
     let result: ChatPromptResult
     try {
       result = await deps.sendChatPrompt(command)

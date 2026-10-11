@@ -561,7 +561,14 @@ import {
   sharedSessionPaletteLabel,
   shareSentNotice
 } from '../lib/agentSessionsShare'
-import { recordPresence, refreshShareFacts, shareFactsNodesOf } from '../state/agentSessions'
+import {
+  agentSessionsHidden,
+  anyAgentSessionsPresent,
+  recordDetect,
+  refreshDetect,
+  refreshShareFacts,
+  shareFactsNodesOf
+} from '../state/agentSessions'
 import { chatAgentLabel } from '../lib/chatPanel'
 import { parseTeamSpec } from '../lib/teamSpec'
 import { relativeTime } from '../lib/relativeTime'
@@ -6516,7 +6523,9 @@ export function Canvas() {
       )
       const issueRef = normalizeIssueRef(extra?.issueRef)
       const bound = issueRef ? { ...created, data: { ...created.data, issueRef } } : created
-      const node = extra?.awaitSetupGroup ? queueControlLaunch(bound, [], extra.awaitSetupGroup) : bound
+      // A held launch records the file its prompt is read from, so the delivery loop can check it is
+      // still there when the setup script finally releases the node (the control opens' rule).
+      const node = extra?.awaitSetupGroup ? withLaunchBrief(queueControlLaunch(bound, [], extra.awaitSetupGroup), extra.promptFile) : bound
       // Parented HERE, not inside the updater: the updater runs at render time, and a render that
       // a zustand write flushes first (SyncLane, skipping this DefaultLane update) mirrors
       // `nodesRef` back to state — which does not hold a frame `attachWorktree` created this tick.
@@ -10482,11 +10491,14 @@ export function Canvas() {
     const customAgents = useSettings.getState().settings.customAgents
     const label = chatAgentLabel(agentId, customAgents)
     const accountId = typeof n.data.accountId === 'string' && n.data.accountId ? n.data.accountId : undefined
+    // The node's own directory (a worktree frame's node runs in the worktree): where its agent would
+    // find a repository copy of the skill or command.
+    const nodeCwd = typeof n.data.cwd === 'string' && n.data.cwd ? n.data.cwd : project.cwd
     const out = await sendShareCommand(nodeId, agentId, label, {
       status: () => useAgentStatus.getState().byId[nodeId] ?? {},
       detect: async (agent) => {
-        const r = await target.api.agentSessions.detect({ agent, ...(accountId ? { accountId } : {}) })
-        recordPresence(agent, accountId, r.ok ? r.presence : 'unknown')
+        const r = await target.api.agentSessions.detect({ agent, ...(accountId ? { accountId } : {}), cwd: nodeCwd })
+        recordDetect(agent, accountId, nodeCwd, r)
         return r
       },
       paneRefusal: () =>
@@ -16373,7 +16385,7 @@ export function Canvas() {
       // is "End session" (closeSession — stops the tmux session and removes the node too, just
       // confirmed via its own dialog rather than the canvas's shared confirm), so the trailing
       // Delete is swapped for End session rather than offered beside it.
-      const body: MenuItem[] =
+      const bodyOf = (): MenuItem[] =>
         projectId === activeProjectId
           ? [
               // The canvas menu minus its trailing "Delete" (destructive deleteNodes) — the
@@ -16400,7 +16412,15 @@ export function Canvas() {
               { type: 'separator' },
               { label: 'End session', icon: <IconTrash />, danger: true, onClick: () => closeSession(projectId, id) }
             ]
-      setMenu({ x: e.clientX, y: e.clientY, items: [...head, ...body] })
+      const items = [...head, ...bodyOf()]
+      setMenu({ x: e.clientX, y: e.clientY, items })
+      // The share row reads cached facts, exactly as on the canvas menu: ask again for this node and
+      // rebuild THIS menu if an answer changed while it is still open.
+      if (projectId === activeProjectId) {
+        void refreshShareFacts(projectId, { nodes: shareFactsNodesOf(nodesRef.current), only: [id] }).then((changed) => {
+          if (changed) setMenu((m) => (m && m.items === items ? { ...m, items: [...head, ...bodyOf()] } : m))
+        })
+      }
     },
     [
       activeProjectId,
@@ -18009,11 +18029,26 @@ export function Canvas() {
     const projectId = useProjects.getState().activeProjectId
     const project = useProjects.getState().getProject(projectId)
     const target = sessionForProject(projectId)
-    if (!project?.cwd || project.ssh || target.source === 'relay') {
+    if (agentSessionsHidden() || !project?.cwd || project.ssh || target.source === 'relay') {
       setSharedSessions(null)
       return
     }
     try {
+      // INERT unless agent-sessions is installed for some agent: the facts already read, else the
+      // agent Continue would open (the project's default, on the project's default account).
+      if (!anyAgentSessionsPresent()) {
+        const agent = agentSessionsAgentOf(resolveNewNodeAgent(undefined, projectId, useSettings.getState().settings))
+        if (agent) {
+          const settings = useSettings.getState().settings
+          const accountId =
+            agent === 'claude' ? resolveNewNodeAccount(undefined, project, settings.claudeAccounts) : undefined
+          await refreshDetect(target.api.agentSessions, agent, accountId)
+        }
+        if (!anyAgentSessionsPresent()) {
+          setSharedSessions(null)
+          return
+        }
+      }
       // Read at the repository ROOT: agent-sessions writes there, and the project may be a subfolder.
       const repoRoot = await target.api.git.repoRoot(project.cwd)
       const r = repoRoot ? await target.api.agentSessions.listShared({ repoRoot }) : null
@@ -18027,20 +18062,21 @@ export function Canvas() {
   }, [paletteOpen, refreshSharedSessions])
 
   /**
-   * Open a NEW agent node in the active project whose first prompt NAMES the shared folder and says
-   * how to read it — reference-only (`sharedSessionContinuePrompt`, which re-validates the folder
-   * name itself): nothing from meta.json, summary.md or the transcript is typed. The agent is the
+   * Open a NEW agent node in the active project whose first prompt NAMES the shared folder and its
+   * exact files (summary.md, then the transcript files core found as regular files) — reference-only
+   * (`sharedSessionContinuePrompt`, which re-validates every name itself): nothing from meta.json,
+   * summary.md or the transcript is typed. The agent is the
    * project's default (`resolveNewNodeAgent`), the account the project default (`addAgentNode`'s
    * funnel, which also applies the permission mode), and an over-budget prompt is spilled to a file
    * like every other generated launch prompt (`launchPromptFor`). The node keeps the agent's own
    * title — a title from meta.json would be a teammate's text on this machine's node.
    */
   const continueSharedSession = useCallback(
-    async (dir: string): Promise<void> => {
+    async (dir: string, transcriptFiles: readonly string[]): Promise<void> => {
       const projectId = useProjects.getState().activeProjectId
       const project = useProjects.getState().getProject(projectId)
       const target = sessionForProject(projectId)
-      const prompt = sharedSessionContinuePrompt(dir)
+      const prompt = sharedSessionContinuePrompt(dir, transcriptFiles)
       if (!prompt) {
         setNotice({ kind: 'error', text: 'That shared session’s folder name is not one agent-sessions writes — nothing was started.' })
         return
@@ -18596,7 +18632,7 @@ export function Canvas() {
         hint: shared.dir,
         section: 'Shared sessions',
         icon: shared.agentId ? <AgentIcon agentId={shared.agentId} /> : <IconSessions />,
-        run: () => void continueSharedSession(shared.dir)
+        run: () => void continueSharedSession(shared.dir, shared.transcriptFiles)
       }))
   }, [paletteOpen, sharedSessions, activeProjectId, continueSharedSession])
 
