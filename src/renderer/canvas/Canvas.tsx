@@ -20,6 +20,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { playSfx, primeSfx } from '@renderer/lib/sfx'
 import { fanoutStillWorking } from '@renderer/lib/completionAlert'
 import { decideAgentAlert, notifyConsentPatch, type AgentAlertKind } from '@renderer/lib/agentAlert'
+import { dockBadgeCount } from '@shared/dock-badge'
 import { publishCanvasZoom } from '@renderer/lib/canvasZoomVar'
 import {
   addEdge,
@@ -4979,17 +4980,16 @@ export function Canvas() {
     if (valid.length !== linkEdges.length) setLinkEdges(valid)
   }, [linkEdges, nodes, setLinkEdges])
 
-  // Reflect Claude nodes with unread output as a macOS Dock badge count (across all projects).
-  // Subscribes to the derived count (a primitive), not the byId map, for the same reason as
-  // loopSig above — state flips must not re-render the canvas.
-  const unreadCount = useAgentStatus((s) => {
-    let count = 0
-    for (const st of Object.values(s.byId)) if (st?.unread) count++
-    return count
-  })
+  // The macOS Dock badge (across all projects). What it counts is `settings.dockBadgeMode`
+  // (@shared/dock-badge): unread nodes (the default), nodes waiting on the user right now, or
+  // nothing — 'off' still SENDS 0, which is what clears a badge already showing. Subscribes to the
+  // derived count (a primitive), not the byId map, for the same reason as loopSig above — state
+  // flips must not re-render the canvas.
+  const dockBadgeMode = useSettings((s) => s.settings.dockBadgeMode)
+  const dockBadge = useAgentStatus((s) => dockBadgeCount(s.byId, dockBadgeMode))
   useEffect(() => {
-    window.nodeTerminal.setBadgeCount(unreadCount)
-  }, [unreadCount])
+    window.nodeTerminal.setBadgeCount(dockBadge)
+  }, [dockBadge])
 
   // Feed per-session context-window fill from main into the transient store.
   useEffect(() => {

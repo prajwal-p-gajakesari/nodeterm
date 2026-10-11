@@ -5,6 +5,10 @@ import { SearchableRow } from '../SearchableRow'
 import { FieldRow } from '../FieldRow'
 import { Switch } from '@renderer/ui/Switch'
 import { Button } from '@renderer/ui/Button'
+import { Select } from '@renderer/ui/Select'
+import { isBrowserRuntime } from '@renderer/bridge/runtime'
+import { isMacPlatform } from '@shared/platform-utils'
+import { dockBadgeModeOf } from '@shared/dock-badge'
 import { checkCustomSfx, playSfx } from '@renderer/lib/sfx'
 import { readAsBase64 } from '@renderer/terminal/file-drop'
 import {
@@ -26,6 +30,10 @@ const ROWS = {
     title: 'Notify when an agent needs you',
     keywords: ['notify', 'notification', 'needs you', 'approval', 'permission', 'question', 'blocked', 'waiting', 'focused', 'foreground', 'in front', 'while using']
   },
+  dockBadge: {
+    title: 'Dock badge',
+    keywords: ['dock', 'badge', 'icon', 'count', 'number', 'unread', 'needs you', 'waiting', 'approval', 'off']
+  },
   sound: {
     title: 'Play a sound when a turn finishes or needs you',
     keywords: ['sound', 'audio', 'sfx', 'effect', 'chime', 'beep', 'retro', '8-bit', 'chiptune', 'volume', 'mute', 'finished', 'needs you', 'custom', 'file', 'mp3', 'wav', 'own sound']
@@ -38,6 +46,45 @@ const ROWS = {
 const ENTRIES = Object.values(ROWS)
 
 const SOUND_LABELS: Record<AlertSoundKind, string> = { done: 'Finished sound', needsYou: 'Needs-you sound' }
+
+/**
+ * What the Dock icon's number counts (`settings.dockBadgeMode`, @shared/dock-badge). Kept visible
+ * but disabled, with the reason, where there is no Dock to badge: desktop main sets it on macOS
+ * only, and a Server Edition browser tab has no app icon at all (its bridge drops the count).
+ */
+function DockBadgeRow(): React.JSX.Element {
+  const dockBadgeMode = useSettings((s) => s.settings.dockBadgeMode)
+  const update = useSettings((s) => s.update)
+  const note = isBrowserRuntime()
+    ? 'The Server Edition runs in a browser tab, which has no Dock icon to badge.'
+    : !isMacPlatform()
+      ? 'Only the macOS Dock shows this badge.'
+      : undefined
+  return (
+    <FieldRow
+      label="Dock badge"
+      htmlFor="dock-badge-mode"
+      description="What the number on nodeterm's Dock icon counts. Unread: sessions with news you haven't looked at. Waiting on you: sessions showing NEEDS YOU — an approval or a question — right now, even after you've looked; a finished turn doesn't count there."
+      note={note}
+      control={
+        <Select
+          id="dock-badge-mode"
+          value={dockBadgeMode}
+          disabled={note !== undefined}
+          aria-label="Dock badge"
+          onChange={(e) => update({ dockBadgeMode: dockBadgeModeOf(e.target.value) })}
+        >
+          {/* Unread stays FIRST: it is the default, and a select whose value matches no option
+              shows its first one — so a hand-edited mode reads on screen as what dockBadgeModeOf
+              makes of it. */}
+          <option value="unread">Unread sessions</option>
+          <option value="needs-you">Waiting on you</option>
+          <option value="off">Off</option>
+        </Select>
+      }
+    />
+  )
+}
 
 /**
  * One alert kind's sound (issue #289): the built-in chime or the user's own file. The picked file's
@@ -248,6 +295,9 @@ export function NotificationsSection({ isActive }: { isActive: boolean }): React
           />
         </div>
         {osBlockedNote('needsYou')}
+      </SearchableRow>
+      <SearchableRow {...ROWS.dockBadge}>
+        <DockBadgeRow />
       </SearchableRow>
       <SearchableRow {...ROWS.sound}>
         <FieldRow

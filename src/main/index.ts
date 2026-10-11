@@ -1730,7 +1730,8 @@ app.whenReady().then(async () => {
     })
   )
 
-  // Dock badge: number of Claude nodes with unread output (macOS only). '' clears it.
+  // Dock badge (macOS only): the renderer's count under `settings.dockBadgeMode` — unread nodes by
+  // default, or nodes waiting on the user (@shared/dock-badge). 0 / '' clears it.
   ipcMain.on(IPC.appSetBadge, (_e, count: number) => {
     if (process.platform !== 'darwin' || !app.dock) return
     app.dock.setBadge(count > 0 ? String(count) : '')

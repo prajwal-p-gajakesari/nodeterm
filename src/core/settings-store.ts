@@ -4,6 +4,7 @@ import { writeFileAtomic } from "./fs-atomic";
 import { IPC } from "../shared/ipc";
 import { platform } from "./platform";
 import { DEFAULT_SETTINGS, type Settings } from "../shared/types";
+import { dockBadgeModeOf } from "../shared/dock-badge";
 
 /**
  * Merge a possibly-partial/legacy `Settings` object over `DEFAULT_SETTINGS`. A plain
@@ -100,6 +101,8 @@ function mergeSettings(saved: Partial<Settings> | null | undefined): Settings {
     ?.notifyOnNeedsYou;
   if (typeof savedNeedsYou !== "boolean")
     merged.notifyOnNeedsYou = Boolean(merged.notifyOnClaudeDone);
+  // Hand-editable: an unrecognised badge mode is the default ('unread'), never "off" by accident.
+  merged.dockBadgeMode = dockBadgeModeOf(merged.dockBadgeMode);
   // Pre-release switch that became the "Liquid Glass" appearance; honoured once so a tester's
   // choice carries over, and only where the appearance still followed the terminal.
   const legacyGlass = (saved as { glassTerminals?: unknown } | null | undefined)?.glassTerminals;

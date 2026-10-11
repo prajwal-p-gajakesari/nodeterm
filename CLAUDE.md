@@ -3316,6 +3316,18 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   API (only once the browser has granted permission), which ignores `force` and focus — the
   renderer's decision is the whole gate there. Mobile push has its own toggles (`mobilePush*`),
   untouched by these.
+- **Dock badge** (`settings.dockBadgeMode`, `@shared/dock-badge`) — `'unread'` (default: the unread
+  flags above), `'needs-you'` (live `waiting`/`blocked`, exactly what the header's NEEDS YOU shows,
+  independent of unread — looking at a still-blocked node does not drop it) or `'off'` (still SENDS
+  0, which is what clears a badge already showing). A finished turn never counts as needs-you,
+  seen or not: that is `'unread'`'s job. The sessions sidebar's "Waiting for your response" group
+  does include `done` — it sorts by whose move it is, while the badge answers "how many agents are
+  stuck until I act". Canvas subscribes to the primitive `dockBadgeCount`, never to `byId`. Live
+  `state` is not persisted, so `'needs-you'` reads 0 after a restart until each agent's next hook
+  event. Main applies it on macOS only; the Server Edition bridge's `setBadgeCount` is a no-op, and
+  the Settings row is disabled with its reason in a browser tab and off macOS. The mode is
+  validated on load (`mergeSettings`) and at the point of use (`dockBadgeModeOf`): an unknown value
+  is `'unread'`, never `'off'`.
 - **Sound alerts + custom sounds** (issue #289) — the `done` / `needsYou` alert (`SfxKind`) is a
   synthesized WebAudio chime (`renderer/lib/sfx.ts`, decided by `decideAgentAlert` and played from
   Canvas's `alert` closure, gated by `soundEffects`, 5 s/node cooldown, focused or not). Settings → Notifications lets the user replace either with their

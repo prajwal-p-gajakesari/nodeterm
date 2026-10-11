@@ -10,6 +10,12 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { DEFAULT_SETTINGS, type Settings } from '@shared/types'
 
 vi.mock('@renderer/lib/sfx', () => ({ playSfx: vi.fn(), checkCustomSfx: vi.fn(async () => true) }))
+const flags = vi.hoisted(() => ({ browser: false, mac: true }))
+vi.mock('@renderer/bridge/runtime', () => ({ isBrowserRuntime: () => flags.browser }))
+vi.mock('@shared/platform-utils', async (orig) => ({
+  ...(await orig<typeof import('@shared/platform-utils')>()),
+  isMacPlatform: () => flags.mac
+}))
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -36,6 +42,8 @@ const CONSENTED: Settings = { ...DEFAULT_SETTINGS, notifyConsentAsked: true }
 let host: HTMLDivElement
 let root: Root
 beforeEach(() => {
+  flags.browser = false
+  flags.mac = true
   notify.mockReset().mockImplementation(async () => 'shown')
   useSettings.setState({ settings: CONSENTED, hydrated: true })
   host = document.createElement('div')
@@ -129,5 +137,54 @@ describe('NotificationsSection — notify while nodeterm is in front', () => {
     expect(group?.getAttribute('aria-disabled')).toBe('true')
     await render({ notifyOnNeedsYou: true })
     expect(sw(FOCUSED).closest('[aria-disabled]')?.getAttribute('aria-disabled')).toBe('false')
+  })
+})
+
+describe('NotificationsSection — Dock badge', () => {
+  const select = (): HTMLSelectElement => {
+    const el = host.querySelector<HTMLSelectElement>('select[aria-label="Dock badge"]')
+    expect(el, 'a Dock badge select must be in the Notifications section').toBeTruthy()
+    return el!
+  }
+  const choose = (value: string): Promise<void> =>
+    act(async () => {
+      const el = select()
+      el.value = value
+      el.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+  it("ships on today's badge, unread sessions", async () => {
+    await render()
+    expect(select().value).toBe('unread')
+    expect(select().disabled).toBe(false)
+  })
+
+  it('writes each mode', async () => {
+    await render()
+    await choose('needs-you')
+    expect(settings().dockBadgeMode).toBe('needs-you')
+    await choose('off')
+    expect(settings().dockBadgeMode).toBe('off')
+    await choose('unread')
+    expect(settings().dockBadgeMode).toBe('unread')
+  })
+
+  it('shows a hand-edited value as the mode it is read as', async () => {
+    await render({ dockBadgeMode: 'sometimes' as never })
+    expect(select().value).toBe('unread')
+  })
+
+  it('Server Edition: disabled, and says why', async () => {
+    flags.browser = true
+    await render()
+    expect(select().disabled).toBe(true)
+    expect(host.textContent).toContain('The Server Edition runs in a browser tab, which has no Dock icon to badge.')
+  })
+
+  it('desktop off macOS: disabled, and says why', async () => {
+    flags.mac = false
+    await render()
+    expect(select().disabled).toBe(true)
+    expect(host.textContent).toContain('Only the macOS Dock shows this badge.')
   })
 })

@@ -277,6 +277,29 @@ describe('SettingsStore nested-default merge', () => {
     })
   })
 
+  describe('Dock badge mode', () => {
+    const loadWith = (saved: Record<string, unknown>): Settings => {
+      writeFileSync(path.join(dir, 'settings.json'), JSON.stringify(saved), 'utf-8')
+      const store = new SettingsStore()
+      store.init()
+      return store.get()
+    }
+
+    it("an existing file keeps today's badge: unread", () => {
+      expect(loadWith({ notifyOnClaudeDone: true }).dockBadgeMode).toBe('unread')
+    })
+
+    it('keeps a chosen mode', () => {
+      expect(loadWith({ dockBadgeMode: 'needs-you' }).dockBadgeMode).toBe('needs-you')
+      expect(loadWith({ dockBadgeMode: 'off' }).dockBadgeMode).toBe('off')
+    })
+
+    it('normalizes a hand-edited value to the default, never to off', () => {
+      expect(loadWith({ dockBadgeMode: 'OFF' }).dockBadgeMode).toBe('unread')
+      expect(loadWith({ dockBadgeMode: 3 }).dockBadgeMode).toBe('unread')
+    })
+  })
+
   describe('dictation chord seed (one-shot migration)', () => {
     // Same disk fixture as the sibling describes: write a settings.json, load it through the real
     // store, read the merged result back.

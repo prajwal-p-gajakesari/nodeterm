@@ -30,6 +30,7 @@ import type { CodexAccount } from './codex-account'
 import type { NotchAlign } from './notch-hud'
 import type { ProjectIcon, ProjectIconPickResult } from './project-icon'
 import type { AlertSoundKind, AlertSoundSaveResult, CustomAlertSounds } from './alert-sound'
+import type { DockBadgeMode } from './dock-badge'
 import type { CanvasLayout, LayoutViewports } from './canvas-layout'
 import type { ShareTeamApi } from './share-team'
 import type {
@@ -2066,6 +2067,10 @@ export interface Settings {
    *  Rides `NotifyPayload.force` past main's focused-window skip. Default off: needs-you
    *  notifications stay background-only unless the user opts in. Finished turns never use it. */
   notifyWhileFocused: boolean
+  /** What the Dock icon badge counts: `'unread'` (default — nodes with the unread flag),
+   *  `'needs-you'` (nodes waiting on an approval or a question right now, independent of unread) or
+   *  `'off'`. See `@shared/dock-badge`; read through `dockBadgeModeOf` (hand-editable). */
+  dockBadgeMode: DockBadgeMode
   /** Periodically `git fetch` while the Source Control panel is open, so ahead/behind stays
    *  accurate (remote/SSH projects fetch on the remote). */
   gitAutoFetch: boolean
@@ -2380,6 +2385,7 @@ export const DEFAULT_SETTINGS: Settings = {
   notifyOnClaudeDone: true,
   notifyOnNeedsYou: true,
   notifyWhileFocused: false,
+  dockBadgeMode: 'unread',
   gitAutoFetch: true,
   notifyConsentAsked: false,
   soundEffects: true,
