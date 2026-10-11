@@ -319,6 +319,15 @@ export function buildStubApi(): Omit<
     recentConversations: {
       list: () => Promise.resolve({ ok: false as const, reason: 'unsupported' as const })
     },
+    // Real in the browser (ws-bridge `buildAgentSessionsApi`). In force on a RELAY tab (relay-api
+    // takes this member explicitly): there the sessions and the repository are the HOST's, and the
+    // host serves neither channel to a peer (`HOST_ONLY_CHANNELS`). `unsupported` = "could not
+    // look" — never "not installed" or "nothing shared". The renderer refuses relay tabs before it
+    // asks anyway (the menu row is disabled with the reason, the palette omits the section).
+    agentSessions: {
+      detect: () => Promise.resolve({ ok: false as const, reason: 'unsupported' as const }),
+      listShared: () => Promise.resolve({ ok: false as const, reason: 'unsupported' as const })
+    },
     sessionMemory: {
       // Superseded by the real WS-backed namespace in ws-bridge (the core session-memory service
       // runs in the server shell too), so nothing reaches these in a live browser session. Kept

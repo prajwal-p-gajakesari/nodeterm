@@ -183,6 +183,11 @@ export function buildRelayApi(
     // `recentConversations` stays on `...local` ON PURPOSE: "Open recent" lists THIS machine's agent
     // histories and resumes them into this machine's local projects only. The host's list is
     // host-only (`HOST_ONLY_CHANNELS`) — a peer never reads the host's conversation titles.
+    // `agentSessions` is the opposite case and takes the STUB, never `...local`: a relay tab's nodes
+    // and repositories are the host's, so the local preload would read THIS machine's agent config
+    // and THIS machine's disk at the host's path. Both channels are host-only, and the renderer
+    // refuses relay tabs before asking (v1 degrade, documented in CLAUDE.md "agent-sessions").
+    agentSessions: stub.agentSessions,
     // Agent canvas-control (`agent:control`) is not wired over the relay (matches the Server
     // Edition); inert no-ops rather than a local subscription that never carries the host's events.
     onAgentControl: stub.onAgentControl,

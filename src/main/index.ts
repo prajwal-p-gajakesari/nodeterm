@@ -286,6 +286,7 @@ import {
 } from '../core/remote-transcript-locate'
 import { readChatCatalog, registerChatCatalogIpc, type ChatCatalogDeps } from '../core/chat-catalog'
 import { registerRecentConversationsIpc } from '../core/recent-conversations'
+import { registerAgentSessionsIpc } from '../core/agent-sessions'
 import { readChatTranscript, registerTranscriptIpc, resolveTranscript, type TranscriptIpcDeps } from '../core/transcript-ipc'
 import { createReadRemoteGrokChat } from '../core/remote-grok-chat'
 import { createHostChat, mirrorChatSendRefusal } from './remote/host-chat'
@@ -3040,6 +3041,9 @@ app.whenReady().then(async () => {
   registerChatCatalogIpc(chatCatalogDeps)
   // "Open recent": this machine's agent histories (both shells register it — core/recent-conversations.ts).
   registerRecentConversationsIpc()
+  // agent-sessions (optional, detected): this machine's agent config + a repository's shared
+  // sessions (both shells register it — core/agent-sessions.ts).
+  registerAgentSessionsIpc()
 
   initTranscriptIndex(() => settingsStore.get().claudeAccounts ?? [])
   corePlatform.handle(IPC.transcriptSearch, (query: string) => searchTranscripts(query))

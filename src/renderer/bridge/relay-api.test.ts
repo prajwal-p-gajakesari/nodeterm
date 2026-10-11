@@ -99,6 +99,25 @@ describe('buildRelayApi', () => {
     expect(api.githubControl).toBe(local.githubControl)
   })
 
+  it('agent-sessions takes the stub — never this machine’s preload, which would read the wrong disk', async () => {
+    const { local } = fakeLocalApi()
+    const localAgentSessions = { detect: vi.fn(), listShared: vi.fn() }
+    ;(globalThis as Record<string, unknown>).window = { nodeTerminal: { ...local, agentSessions: localAgentSessions } }
+    const t = new FakeTransport()
+    const { api } = buildRelayApi('conn-1', t)
+
+    expect(api.agentSessions).not.toBe(localAgentSessions)
+    await expect(api.agentSessions.detect({ agent: 'claude' })).resolves.toEqual({ ok: false, reason: 'unsupported' })
+    await expect(api.agentSessions.listShared({ repoRoot: '/host/repo' })).resolves.toEqual({
+      ok: false,
+      reason: 'unsupported'
+    })
+    expect(localAgentSessions.detect).not.toHaveBeenCalled()
+    expect(localAgentSessions.listShared).not.toHaveBeenCalled()
+    // …and nothing went over the wire to the host either (both channels are host-only).
+    expect(t.sent).toEqual([])
+  })
+
   it('routes GitHub issue data to the host while keeping control local', () => {
     const { local } = fakeLocalApi()
     ;(globalThis as Record<string, unknown>).window = { nodeTerminal: local }
