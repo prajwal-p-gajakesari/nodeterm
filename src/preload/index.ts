@@ -651,6 +651,9 @@ const api: NodeTerminalApi = {
     link: (configDir) => ipcRenderer.invoke(IPC.claudeAccountsLink, configDir),
     setSkillSharing: (id, enabled) =>
       ipcRenderer.invoke(IPC.claudeAccountsSetSkillSharing, id, enabled),
+    setSetupSharing: (id, enabled) =>
+      ipcRenderer.invoke(IPC.claudeAccountsSetSetupSharing, id, enabled),
+    setupSharingStatus: (id) => ipcRenderer.invoke(IPC.claudeAccountsSetupSharingStatus, id),
     copySession: (sessionId, sourceAccountId, targetAccountId, ctx) =>
       ipcRenderer.invoke(IPC.claudeAccountsCopySession, sessionId, sourceAccountId, targetAccountId, ctx)
   },

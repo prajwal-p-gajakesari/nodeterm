@@ -40,6 +40,7 @@ import { buildContextLinkSkillBody } from './context-link-core'
 import { claudeConfigDirFor } from './claude-config-dir'
 import { codexHomeForAccount, systemCodexHome } from './codex-accounts-core'
 import { applySkillShare } from './claude-skill-share'
+import { applySetupShare } from './claude-setup-share'
 import {
   ReceiptStore,
   pushRetained,
@@ -260,6 +261,24 @@ export function createIntegrationLifecycle(deps: IntegrationLifecycleDeps): Inte
         dir = claudeConfigDirFor(a.id)
       } catch {
         continue
+      }
+      // Shared ~/.claude setup — its own explicit per-account opt-in, independent of this consent.
+      // It runs BEFORE the hook install below, and that order is the fix rather than a detail: with
+      // sharing on and the `settings.json` slot empty (the user deleted a diverged copy, or a crash
+      // between set-aside and link), the hook installer would create a REAL settings.json there
+      // first and the account would silently stop sharing at every boot. Linked first, the install
+      // writes THROUGH the link into ~/.claude/settings.json — which already carries the same
+      // managed hook (and `tui`) whenever claude is enabled, so it is a no-op there (the installer
+      // drops its own prior entry per event before adding one, so it cannot duplicate). The sweep
+      // only links EMPTY slots: it never sets anything aside and never removes (see the planner).
+      if (a.shareSystemSetup) {
+        applySetupShare({
+          accountId: a.id,
+          configDir: dir,
+          enabled: true,
+          gesture: 'sweep',
+          systemDir: path.join(home, '.claude')
+        })
       }
       try {
         if (enabled.includes('claude')) {

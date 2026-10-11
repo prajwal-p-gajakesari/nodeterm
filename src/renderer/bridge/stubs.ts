@@ -455,6 +455,8 @@ export function buildStubApi(): Omit<
       remove: U('claudeAccounts.remove'),
       link: U('claudeAccounts.link'),
       setSkillSharing: U('claudeAccounts.setSkillSharing'),
+      setSetupSharing: U('claudeAccounts.setSetupSharing'),
+      setupSharingStatus: U('claudeAccounts.setupSharingStatus'),
       copySession: U('claudeAccounts.copySession')
     },
     codexAccounts: {

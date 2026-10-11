@@ -4,7 +4,7 @@
 // did not enable, a decline removes exactly what nodeterm wrote (a file they edited is kept and
 // reported), and every agent that has canvas control / context link still discovers them.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import os from 'os'
 import path from 'path'
 import { initPlatform, resetPlatformForTests } from './platform'
@@ -184,6 +184,57 @@ describe('discovery: every capable agent still finds canvas control and context 
     }
     expect(existsSync(accountConfigDir(userData, 'remote'))).toBe(false)
     expect(existsSync(accountConfigDir(userData, 'pending'))).toBe(false)
+  })
+})
+
+describe('shared ~/.claude setup — the launch sweep', () => {
+  // The sweep replays a stored `shareSystemSetup: true`. Ordered before the hook install on purpose:
+  // an empty settings.json slot must become the link, or the installer fills it with a real file
+  // and the account silently stops sharing at every boot.
+  const systemSettings = (): string => path.join(home, '.claude', 'settings.json')
+  const USER_HOOK = { hooks: { Notification: [{ hooks: [{ type: 'command', command: 'flowboard push' }] }] } }
+  const setup = (flag: boolean): string => {
+    put(systemSettings(), JSON.stringify(USER_HOOK))
+    const dir = accountConfigDir(userData, 'acc-1')
+    mkdirSync(dir, { recursive: true })
+    const accounts = [{ id: 'acc-1', label: 'a', createdAt: 0, shareSystemSetup: flag }] as ClaudeAccount[]
+    registerClaudeAccountsSource(() => accounts)
+    const { lc } = lifecycle(() => withAgents({ claude: 'enabled' }, { claudeAccounts: accounts }), { realHooks: true })
+    lc.reconcile()
+    return dir
+  }
+
+  it('links an empty settings.json slot BEFORE the hook install can put a real file there', () => {
+    const dir = setup(true)
+    expect(lstatSync(path.join(dir, 'settings.json')).isSymbolicLink()).toBe(true)
+    // The install then wrote THROUGH the link: the user's own hook survives, and nodeterm's managed
+    // hook is in ~/.claude/settings.json exactly once per event — no second copy (#558's class).
+    const sys = JSON.parse(read(systemSettings())) as {
+      hooks: Record<string, { hooks?: { command: string }[] }[]>
+    }
+    expect(JSON.stringify(sys)).toContain('flowboard push')
+    let managed = 0
+    for (const [event, defs] of Object.entries(sys.hooks)) {
+      const ours = defs.flatMap((d) => d.hooks ?? []).filter((h) => h.command.includes('agent-hooks'))
+      expect(ours.length, event).toBeLessThanOrEqual(1)
+      managed += ours.length
+    }
+    expect(managed).toBeGreaterThan(0)
+  })
+
+  it('without the flag the account keeps a settings.json of its own', () => {
+    const dir = setup(false)
+    expect(lstatSync(path.join(dir, 'settings.json')).isSymbolicLink()).toBe(false)
+    expect(read(path.join(dir, 'settings.json'))).not.toContain('flowboard push')
+  })
+
+  it('never sets the account’s own settings.json aside — only the switch moves files', () => {
+    const dir = accountConfigDir(userData, 'acc-1')
+    put(path.join(dir, 'settings.json'), '{"model":"account-own"}')
+    setup(true)
+    expect(lstatSync(path.join(dir, 'settings.json')).isSymbolicLink()).toBe(false)
+    expect(read(path.join(dir, 'settings.json'))).toContain('account-own')
+    expect(existsSync(path.join(dir, '.nodeterm-set-aside'))).toBe(false)
   })
 })
 

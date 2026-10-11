@@ -26,11 +26,12 @@ import {
   linkedClaudeConfigDirFor
 } from './claude-config-dir'
 import { applySkillShare, EMPTY_SKILL_SHARE } from './claude-skill-share'
+import { applySetupShare, readSetupShareStatus } from './claude-setup-share'
 import { currentIntegrationLifecycle } from './agent-integrations'
 import { findInLoginPath } from './pty-manager'
 import { platform } from './platform'
 import { copyClaudeSession, type ClaudeSessionCopyOutcome } from './claude-session-copy'
-import type { ClaudeSessionCopyResult } from '../shared/types'
+import type { ClaudeSessionCopyResult, ClaudeSetupShareResult } from '../shared/types'
 import { resolveTranscriptPath, transcriptRoot, SESSION_ID_RE } from './transcript-reader'
 
 const execFileP = promisify(execFile)
@@ -277,6 +278,37 @@ export function registerClaudeAccountsIpc(deps: ClaudeAccountsDeps = {}): void {
     // `skills/` is subject to the same isolation. The plan's realpath refusal is what keeps a
     // hand-edited `configDir` of `~/.claude` from turning this into a self-link.
     return applySkillShare(claudeConfigDirFor(id), enabled)
+  })
+
+  /**
+   * "Share ~/.claude setup" for one LOCAL account: the switch's effect (`gesture: 'toggle'`, the
+   * only caller allowed to set the account's own copies aside or, when off, to remove links and put
+   * them back) and the read-only status the Settings row shows on open. The renderer owns the flag.
+   *
+   * Same two gates as the skills switch, for the same reasons: a REMOTE account is refused (its
+   * config dir is on its host — linking this machine's setup into a local path the session never
+   * reads would be the wrong machine), and `claudeConfigDirFor` validates the id alphabet and
+   * resolves a LINKED account to the user's own dir. The planner's realpath refusal is what keeps a
+   * linked account hand-edited to `~/.claude` from turning this into a self-link.
+   */
+  const setupRefusal = (id: string): ClaudeSetupShareResult | null =>
+    claudeAccountsSnapshot().some((a) => a.id === id && a.host)
+      ? { items: [], identityKeys: [], setAsideDir: '', refused: 'remote-account' }
+      : null
+  platform().handle(IPC.claudeAccountsSetSetupSharing, async (id: string, enabled: boolean) => {
+    const refused = setupRefusal(id)
+    if (refused) return refused
+    return applySetupShare({
+      accountId: id,
+      configDir: claudeConfigDirFor(id),
+      enabled: enabled === true,
+      gesture: 'toggle'
+    })
+  })
+  platform().handle(IPC.claudeAccountsSetupSharingStatus, async (id: string) => {
+    const refused = setupRefusal(id)
+    if (refused) return refused
+    return readSetupShareStatus({ accountId: id, configDir: claudeConfigDirFor(id) })
   })
 
   /**

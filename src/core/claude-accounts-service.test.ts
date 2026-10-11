@@ -53,6 +53,22 @@ vi.mock('./claude-skill-share', () => ({
   }
 }))
 
+// The setup-share applier MOVES and LINKS files and defaults to `os.homedir()/.claude`; its behaviour
+// is covered against a real filesystem with an injected system dir in `claude-setup-share.test.ts`.
+// Here only the WIRING is asserted: which dir, which gesture, and what is refused before it runs.
+const setupCalls: { accountId: string; configDir: string; enabled?: boolean; gesture?: string; status?: true }[] = []
+const SETUP_RESULT = { items: [], identityKeys: [], setAsideDir: '/x/.nodeterm-set-aside' }
+vi.mock('./claude-setup-share', () => ({
+  applySetupShare: (t: { accountId: string; configDir: string; enabled: boolean; gesture: string }) => {
+    setupCalls.push({ accountId: t.accountId, configDir: t.configDir, enabled: t.enabled, gesture: t.gesture })
+    return SETUP_RESULT
+  },
+  readSetupShareStatus: (t: { accountId: string; configDir: string }) => {
+    setupCalls.push({ accountId: t.accountId, configDir: t.configDir, status: true })
+    return SETUP_RESULT
+  }
+}))
+
 let fake: FakePlatform
 let userDataDir: string
 
@@ -63,6 +79,7 @@ beforeEach(() => {
   installed.length = 0
   tui.length = 0
   shared.length = 0
+  setupCalls.length = 0
   userDataDir = mkdtempSync(path.join(os.tmpdir(), 'nt-accounts-'))
   fake = fakePlatform({ userDataDir })
   initPlatform(fake)
@@ -73,8 +90,8 @@ afterEach(() => {
   rmSync(userDataDir, { recursive: true, force: true })
 })
 
-describe('registerClaudeAccountsIpc — the seven channels', () => {
-  it('registers exactly the seven claude-accounts channels', () => {
+describe('registerClaudeAccountsIpc — the nine channels', () => {
+  it('registers exactly the nine claude-accounts channels', () => {
     registerClaudeAccountsIpc()
     expect(Object.keys(fake.handlers).sort()).toEqual(
       [
@@ -84,6 +101,8 @@ describe('registerClaudeAccountsIpc — the seven channels', () => {
         IPC.claudeAccountsLink,
         IPC.claudeAccountsRemove,
         IPC.claudeAccountsSetSkillSharing,
+        IPC.claudeAccountsSetSetupSharing,
+        IPC.claudeAccountsSetupSharingStatus,
         IPC.claudeAccountsWaitLogin
       ].sort()
     )
@@ -209,6 +228,60 @@ describe('claudeAccounts.setSkillSharing', () => {
     registerClaudeAccountsIpc()
     await expect(call(IPC.claudeAccountsSetSkillSharing, '../evil', true)).rejects.toThrow()
     expect(shared).toEqual([])
+  })
+})
+
+describe('claudeAccounts.setSetupSharing / setupSharingStatus', () => {
+  it('reconciles the account dir as an explicit toggle, and reads status without a gesture', async () => {
+    registerClaudeAccountsIpc()
+    expect(await call(IPC.claudeAccountsSetSetupSharing, 'aaa', true)).toEqual(SETUP_RESULT)
+    await call(IPC.claudeAccountsSetSetupSharing, 'aaa', false)
+    await call(IPC.claudeAccountsSetupSharingStatus, 'aaa')
+    const dir = accountConfigDir(userDataDir, 'aaa')
+    expect(setupCalls).toEqual([
+      { accountId: 'aaa', configDir: dir, enabled: true, gesture: 'toggle' },
+      { accountId: 'aaa', configDir: dir, enabled: false, gesture: 'toggle' },
+      { accountId: 'aaa', configDir: dir, status: true }
+    ])
+  })
+
+  it('only a literal true turns it on — a malformed wire value is OFF, never ON', async () => {
+    registerClaudeAccountsIpc()
+    await call(IPC.claudeAccountsSetSetupSharing, 'aaa', 'yes')
+    expect(setupCalls[0].enabled).toBe(false)
+  })
+
+  it('resolves a LINKED account to the user’s own dir', async () => {
+    const linked = mkdtempSync(path.join(os.tmpdir(), 'nt-linked-'))
+    try {
+      registerClaudeAccountsSource(() => [
+        { id: 'lnk', label: 'l', configDir: linked, createdAt: 0 } as ClaudeAccount
+      ])
+      registerClaudeAccountsIpc()
+      await call(IPC.claudeAccountsSetSetupSharing, 'lnk', true)
+      expect(setupCalls[0].configDir).toBe(linked)
+    } finally {
+      rmSync(linked, { recursive: true, force: true })
+    }
+  })
+
+  // A remote account's config dir is on its HOST: reconciling a local path would link this
+  // machine's setup into a directory the session never reads. Refused before the applier runs.
+  it('refuses a remote (SSH) account, for the switch and the status read alike', async () => {
+    registerClaudeAccountsSource(() => [
+      { id: 'aaa', label: 'r', host: 'user@example', createdAt: 0 } as ClaudeAccount
+    ])
+    registerClaudeAccountsIpc()
+    expect((await call(IPC.claudeAccountsSetSetupSharing, 'aaa', true)).refused).toBe('remote-account')
+    expect((await call(IPC.claudeAccountsSetupSharingStatus, 'aaa')).refused).toBe('remote-account')
+    expect(setupCalls).toEqual([])
+  })
+
+  it('refuses an id that could traverse out of the accounts root', async () => {
+    registerClaudeAccountsIpc()
+    await expect(call(IPC.claudeAccountsSetSetupSharing, '../evil', true)).rejects.toThrow()
+    await expect(call(IPC.claudeAccountsSetupSharingStatus, '../evil')).rejects.toThrow()
+    expect(setupCalls).toEqual([])
   })
 })
 
