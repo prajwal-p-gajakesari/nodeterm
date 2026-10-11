@@ -4984,12 +4984,16 @@ export function Canvas() {
   // (@shared/dock-badge): unread nodes (the default), nodes waiting on the user right now, or
   // nothing — 'off' still SENDS 0, which is what clears a badge already showing. Subscribes to the
   // derived count (a primitive), not the byId map, for the same reason as loopSig above — state
-  // flips must not re-render the canvas.
+  // flips must not re-render the canvas. Nothing is sent before settings hydrate: until then the
+  // mode is the DEFAULT ('unread'), so a user on 'off' or 'needs-you' saw the unread count flash
+  // at launch.
   const dockBadgeMode = useSettings((s) => s.settings.dockBadgeMode)
+  const dockBadgeModeLoaded = useSettings((s) => s.hydrated)
   const dockBadge = useAgentStatus((s) => dockBadgeCount(s.byId, dockBadgeMode))
   useEffect(() => {
+    if (!dockBadgeModeLoaded) return
     window.nodeTerminal.setBadgeCount(dockBadge)
-  }, [dockBadge])
+  }, [dockBadge, dockBadgeModeLoaded])
 
   // Feed per-session context-window fill from main into the transient store.
   useEffect(() => {

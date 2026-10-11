@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { DOCK_BADGE_MODES, dockBadgeCount, dockBadgeModeOf } from './dock-badge'
 
-// Discriminating on purpose: no row is both unread and needs-you, so a mode that counted the
-// other mode's rows (or both) gives a different number.
+// Discriminating on purpose: unread = 3, needs-you = 2, and one row is both (so their union is 4
+// and their intersection 1). Every one of those four numbers is different, so a mode that counted
+// the other mode's rows, both, or only the overlap fails the assertions below.
 const TABLE = {
   readButBlocked: { state: 'blocked', unread: false }, // looked at, still waiting on an approval
-  unseenQuestion: { state: 'waiting', unread: true }, //  needs you AND unread
+  unseenQuestion: { state: 'waiting', unread: true }, //  needs you AND unread (the overlap)
   finishedUnseen: { state: 'done', unread: true }, //     done while you were away
+  finishedUnseenToo: { state: 'done', unread: true },
   working: { state: 'working', unread: false },
   idle: { unread: false },
   gone: undefined
@@ -14,7 +16,7 @@ const TABLE = {
 
 describe('dockBadgeCount', () => {
   it("'unread' counts the unread flag — today's badge, unchanged", () => {
-    expect(dockBadgeCount(TABLE, 'unread')).toBe(2) // unseenQuestion + finishedUnseen
+    expect(dockBadgeCount(TABLE, 'unread')).toBe(3) // unseenQuestion + both finishedUnseen rows
   })
 
   it("'needs-you' counts nodes waiting on the user now, whether or not they were looked at", () => {

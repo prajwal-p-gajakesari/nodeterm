@@ -9,6 +9,7 @@ import { Select } from '@renderer/ui/Select'
 import { isBrowserRuntime } from '@renderer/bridge/runtime'
 import { isMacPlatform } from '@shared/platform-utils'
 import { dockBadgeModeOf } from '@shared/dock-badge'
+import { notifyTogglePatch } from '@renderer/lib/agentAlert'
 import { checkCustomSfx, playSfx } from '@renderer/lib/sfx'
 import { readAsBase64 } from '@renderer/terminal/file-drop'
 import {
@@ -216,9 +217,10 @@ export function NotificationsSection({ isActive }: { isActive: boolean }): React
   // Kept per row, so the repair path shows under the switch that just failed — not under a row the
   // Settings search may have filtered out.
   const [osBlocked, setOsBlocked] = useState<AlertSoundKind | null>(null)
-  // Turning either kind on answers the one-time consent question and fires a real test
-  // notification: on a fresh install this is what triggers the macOS permission prompt; on a
-  // denied/stale record the OS rejects it and we surface the repair path below.
+  // Flipping either switch answers the one-time consent question for BOTH kinds when it is still
+  // open (`notifyTogglePatch`). Turning one on also fires a real test notification: on a fresh
+  // install this is what triggers the macOS permission prompt; on a denied/stale record the OS
+  // rejects it and we surface the repair path below.
   const testNotification = (kind: AlertSoundKind, body: string): void => {
     void window.nodeTerminal
       .notify({ title: 'Notifications enabled', body, nodeId: '', force: true })
@@ -249,7 +251,7 @@ export function NotificationsSection({ isActive }: { isActive: boolean }): React
               checked={notifyOnClaudeDone}
               ariaLabel="Notify when a turn finishes"
               onChange={(on) => {
-                update({ notifyOnClaudeDone: on, notifyConsentAsked: true })
+                update(notifyTogglePatch('notifyOnClaudeDone', on, useSettings.getState().settings.notifyConsentAsked))
                 setOsBlocked(null)
                 if (on) testNotification('done', "You'll be told when an agent finishes in the background.")
               }}
@@ -267,7 +269,7 @@ export function NotificationsSection({ isActive }: { isActive: boolean }): React
               checked={notifyOnNeedsYou}
               ariaLabel="Notify when an agent needs you"
               onChange={(on) => {
-                update({ notifyOnNeedsYou: on, notifyConsentAsked: true })
+                update(notifyTogglePatch('notifyOnNeedsYou', on, useSettings.getState().settings.notifyConsentAsked))
                 setOsBlocked(null)
                 if (on) testNotification('needsYou', "You'll be told when an agent needs you in the background.")
               }}

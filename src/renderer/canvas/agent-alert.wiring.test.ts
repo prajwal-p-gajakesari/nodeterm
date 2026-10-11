@@ -36,7 +36,12 @@ describe('Canvas agent alert wiring', () => {
   })
 
   it('every consent answer goes through notifyConsentPatch', () => {
-    for (const rel of ['Canvas.tsx', '../components/onboarding/OnboardingFlow.tsx', '../components/NotifyConsentDialog.tsx']) {
+    for (const rel of [
+      'Canvas.tsx',
+      '../components/onboarding/OnboardingFlow.tsx',
+      '../components/NotifyConsentDialog.tsx',
+      '../components/settings/sections/NotificationsSection.tsx'
+    ]) {
       // A hand-rolled `{ notifyConsentAsked: true, notifyOnClaudeDone: … }` is the bug this exists
       // to stop: it answers one kind and leaves the other at its default.
       expect(read(rel), rel).not.toMatch(/notifyConsentAsked:\s*true/)
@@ -46,6 +51,12 @@ describe('Canvas agent alert wiring', () => {
     expect(canvas).toContain('useSettings.getState().update(notifyConsentPatch(false))')
     expect(canvas).toMatch(/s\.notifyConsentAsked \? \{\} : notifyConsentPatch\(false\)/)
     expect(canvas).toContain('useSettings.getState().update(notifyConsentPatch(true))')
+    // The fifth site: a Settings switch flipped before the question was answered. Both switches
+    // go through notifyTogglePatch (behaviour-tested in lib/agentAlert.test.ts and in
+    // NotificationsSection.test.tsx), which answers through notifyConsentPatch.
+    const section = read('../components/settings/sections/NotificationsSection.tsx')
+    for (const key of ['notifyOnClaudeDone', 'notifyOnNeedsYou'])
+      expect(section).toContain(`update(notifyTogglePatch('${key}', on, useSettings.getState().settings.notifyConsentAsked))`)
   })
 })
 
@@ -53,6 +64,14 @@ describe('Canvas Dock badge wiring', () => {
   it("counts with the user's mode, as a primitive selector, and sends that count", () => {
     expect(canvas).toContain('const dockBadgeMode = useSettings((s) => s.settings.dockBadgeMode)')
     expect(canvas).toContain('useAgentStatus((s) => dockBadgeCount(s.byId, dockBadgeMode))')
-    expect(canvas).toMatch(/window\.nodeTerminal\.setBadgeCount\(dockBadge\)\s*\}, \[dockBadge\]\)/)
+    expect(canvas).toMatch(
+      /if \(!dockBadgeModeLoaded\) return\s*window\.nodeTerminal\.setBadgeCount\(dockBadge\)\s*\}, \[dockBadge, dockBadgeModeLoaded\]\)/
+    )
+  })
+
+  it('sends nothing before settings hydrate — the mode would still be the default', () => {
+    // CONTRIBUTING: "A setting read at mount reads the DEFAULT". Without the gate, a user on 'off'
+    // or 'needs-you' sees the unread count flash on the Dock at every launch.
+    expect(canvas).toContain('const dockBadgeModeLoaded = useSettings((s) => s.hydrated)')
   })
 })

@@ -82,7 +82,7 @@ describe('NotificationsSection — finish and needs-you are separate switches', 
     expect(sw(NEEDS).getAttribute('aria-checked')).toBe('true')
   })
 
-  it('turning needs-you on writes only that key, records consent and fires a forced test', async () => {
+  it('turning needs-you on before consent records the answer, leaves finish declined, fires a forced test', async () => {
     await render({ notifyConsentAsked: false, notifyOnClaudeDone: false, notifyOnNeedsYou: false })
     await click(sw(NEEDS))
     expect(settings()).toMatchObject({
@@ -94,7 +94,29 @@ describe('NotificationsSection — finish and needs-you are separate switches', 
     expect(notify.mock.calls[0][0]).toMatchObject({ force: true, nodeId: '' })
   })
 
-  it('turning the finish notification off leaves needs-you alone', async () => {
+  it('a switch flipped before the consent question is answered declines the OTHER kind too', async () => {
+    // Fresh install, tour still open, nothing answered: both kinds sit at their shipped default (ON).
+    // Turning one off must not leave the other on — the tour's skip sees the question answered and
+    // no longer declines it, so that kind would notify someone who never pressed Enable.
+    await render({ notifyConsentAsked: false, notifyOnClaudeDone: true, notifyOnNeedsYou: true })
+    await click(sw(NEEDS))
+    expect(settings()).toMatchObject({
+      notifyConsentAsked: true,
+      notifyOnNeedsYou: false,
+      notifyOnClaudeDone: false
+    })
+    expect(sw(DONE).getAttribute('aria-checked')).toBe('false')
+
+    await render({ notifyConsentAsked: false, notifyOnClaudeDone: true, notifyOnNeedsYou: true })
+    await click(sw(DONE))
+    expect(settings()).toMatchObject({
+      notifyConsentAsked: true,
+      notifyOnClaudeDone: false,
+      notifyOnNeedsYou: false
+    })
+  })
+
+  it('turning the finish notification off leaves needs-you alone once consent is answered', async () => {
     await render({ notifyOnClaudeDone: true, notifyOnNeedsYou: true })
     await click(sw(DONE))
     expect(settings()).toMatchObject({ notifyOnClaudeDone: false, notifyOnNeedsYou: true })
