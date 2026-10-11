@@ -19,7 +19,7 @@ import { useMirrorIdentitySeed } from './useMirrorIdentitySeed'
 import { useShallow } from 'zustand/react/shallow'
 import { playSfx, primeSfx } from '@renderer/lib/sfx'
 import { fanoutStillWorking } from '@renderer/lib/completionAlert'
-import { decideAgentAlert, type AgentAlertKind } from '@renderer/lib/agentAlert'
+import { decideAgentAlert, notifyConsentPatch, type AgentAlertKind } from '@renderer/lib/agentAlert'
 import { publishCanvasZoom } from '@renderer/lib/canvasZoomVar'
 import {
   addEdge,
@@ -16240,7 +16240,8 @@ export function Canvas() {
   // is still away: a window focus in between drops the fold, so the next turn end chimes as always.
   useEffect(() => installHandoffFocusReset(window), [])
   // Sound effects have their OWN cooldown: they fire whether or not the window is focused, so they
-  // can't share the notification one (which only ticks in the background).
+  // can't share the notification one (which only ticks when a notification is raised — in the
+  // background, or for a needs-you under `notifyWhileFocused`).
   const sfxCooldownRef = useRef<Record<string, number>>({})
   useEffect(() => {
     // Notification context = the node's folder name (or its title).
@@ -16329,7 +16330,10 @@ export function Canvas() {
           void window.nodeTerminal.notify({
             title: `${contextFor(e.nodeId)} — ${agentLabel} ${statusText}`,
             body: clip(e.lastMessage) || fallbackBody,
-            nodeId: e.nodeId
+            nodeId: e.nodeId,
+            // Only the `notifyWhileFocused` branch: without it main drops a notification raised
+            // while its window is focused, which is exactly when that opt-in fires.
+            ...(d.force ? { force: true } : {})
           })
         }
       }
@@ -16661,7 +16665,8 @@ export function Canvas() {
   useEffect(() => {
     if (!settingsHydrated || !seenOnboarding) return
     if (useSettings.getState().settings.notifyConsentAsked) return
-    useSettings.getState().update({ notifyConsentAsked: true, notifyOnClaudeDone: false })
+    // Recorded as declined until the dialog says otherwise — both kinds (notifyConsentPatch).
+    useSettings.getState().update(notifyConsentPatch(false))
     setConsentOpen(true)
   }, [settingsHydrated, seenOnboarding])
 
@@ -19024,7 +19029,7 @@ export function Canvas() {
               seenShortcuts: true,
               // Skipping the tour is also a consent answer — the standalone dialog must not
               // pop right on top of a just-skipped setup. Re-decidable in Settings.
-              ...(s.notifyConsentAsked ? {} : { notifyConsentAsked: true, notifyOnClaudeDone: false })
+              ...(s.notifyConsentAsked ? {} : notifyConsentPatch(false))
             })
           }}
         />
@@ -19500,10 +19505,10 @@ export function Canvas() {
       {consentOpen && (
         <NotifyConsentDialog
           onEnable={() => {
-            useSettings.getState().update({ notifyOnClaudeDone: true })
+            useSettings.getState().update(notifyConsentPatch(true))
             void window.nodeTerminal.notify({
               title: 'Notifications enabled',
-              body: "You'll be told when Claude Code finishes in the background.",
+              body: "You'll be told when an agent finishes or needs you in the background.",
               nodeId: '',
               force: true
             })

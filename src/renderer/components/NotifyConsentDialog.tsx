@@ -7,7 +7,8 @@ interface Props {
   onDismiss: () => void
 }
 
-/** A polished one-time prompt asking to enable Claude completion notifications. */
+/** A polished one-time prompt asking to enable agent notifications. Enable answers BOTH kinds —
+ *  a finished turn and an agent that needs you (`notifyConsentPatch`); Settings splits them. */
 export function NotifyConsentDialog({ onEnable, onDismiss }: Props) {
   // Only the TOPMOST modal answers a key — this one and a ConfirmDialog can be on screen together,
   // and both window listeners used to fire on one Enter (see ./dialog-stack).
@@ -36,11 +37,11 @@ export function NotifyConsentDialog({ onEnable, onDismiss }: Props) {
             <path d="M13.7 21a2 2 0 0 1-3.4 0" />
           </svg>
         </div>
-        <h2 className="consent-title">Get notified when Claude finishes</h2>
+        <h2 className="consent-title">Get notified when an agent finishes or needs you</h2>
         <p className="consent-desc">
-          nodeterm can ping you when a Claude Code turn finishes while the app is in the
-          background — so you don't have to babysit a running session. You can change this
-          any time in Settings.
+          nodeterm can ping you when an agent's turn finishes, or when it is waiting on an
+          approval or a question, while the app is in the background — so you don't have to
+          babysit a running session. You can change either one any time in Settings.
         </p>
         <div className="consent-actions">
           <button className="consent-btn ghost" onClick={onDismiss}>

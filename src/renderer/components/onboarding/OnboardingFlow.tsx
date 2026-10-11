@@ -13,6 +13,7 @@ import {
 } from '../../lib/keybindingOverrides'
 import { mobileStoreLinks, mobileStoreNames } from '../../lib/links'
 import { useSettings } from '../../state/settings'
+import { notifyConsentPatch } from '../../lib/agentAlert'
 import { useEntitlement } from '../../state/entitlement'
 import { Switch } from '@renderer/ui/Switch'
 import { AgentIcon } from '../../lib/agentIcons'
@@ -178,11 +179,12 @@ export function OnboardingFlow({ onClose }: { onClose: () => void }) {
 
   // ---- notifications (either choice records the consent and moves on) ----
   const chooseNotifications = (enable: boolean): void => {
-    update({ notifyOnClaudeDone: enable, notifyConsentAsked: true })
+    // One answer, both kinds (finished + needs you) — see notifyConsentPatch.
+    update(notifyConsentPatch(enable))
     if (enable) {
       void window.nodeTerminal.notify({
         title: 'Notifications enabled',
-        body: "You'll be told when an agent finishes in the background.",
+        body: "You'll be told when an agent finishes or needs you in the background.",
         nodeId: '',
         force: true
       })

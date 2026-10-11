@@ -91,6 +91,15 @@ function mergeSettings(saved: Partial<Settings> | null | undefined): Settings {
   }
   // Keep the mirror in lockstep with the resolved mode so an older build still honors the choice.
   merged.vanillaLaunchDefault = merged.agentLaunchMode === "subscription";
+  // `notifyOnNeedsYou` was split out of `notifyOnClaudeDone`, which used to gate the needs-you
+  // notification as well as the finish one. A file that predates the key gets the old toggle's
+  // answer, so an upgrade notifies exactly as before — someone who turned notifications off must
+  // not start getting needs-you banners. Keyed on the key's absence (or a hand-edited non-boolean)
+  // in the SAVED file, like the seeds above: once written, it is the user's own choice.
+  const savedNeedsYou = (saved as { notifyOnNeedsYou?: unknown } | null | undefined)
+    ?.notifyOnNeedsYou;
+  if (typeof savedNeedsYou !== "boolean")
+    merged.notifyOnNeedsYou = Boolean(merged.notifyOnClaudeDone);
   // Pre-release switch that became the "Liquid Glass" appearance; honoured once so a tester's
   // choice carries over, and only where the appearance still followed the terminal.
   const legacyGlass = (saved as { glassTerminals?: unknown } | null | undefined)?.glassTerminals;
