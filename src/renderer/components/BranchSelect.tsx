@@ -13,6 +13,9 @@ interface Props {
   allowCustom?: boolean
   /** Placeholder for the free-text ref field (only shown when `allowCustom`). */
   customPlaceholder?: string
+  /** How an option reads, when its value is an id rather than a name (the worktree dialog's agent
+   *  picker: `custom:<uuid>` must show as the agent's label). Default: the value itself. */
+  optionLabel?: (value: string) => string
 }
 
 /**
@@ -27,7 +30,8 @@ export function BranchSelect({
   options,
   placeholder,
   allowCustom,
-  customPlaceholder
+  customPlaceholder,
+  optionLabel = (v) => v
 }: Props) {
   const [menu, setMenu] = useState<{ top: number; left: number; width: number } | null>(null)
   const [custom, setCustom] = useState('')
@@ -45,7 +49,9 @@ export function BranchSelect({
   return (
     <>
       <button type="button" className="bind-select" onClick={open}>
-        <span className={value ? 'bind-select__val' : 'bind-select__ph'}>{value || placeholder}</span>
+        <span className={value ? 'bind-select__val' : 'bind-select__ph'}>
+          {value ? optionLabel(value) : placeholder}
+        </span>
         <span className="bind-select__chev">⌄</span>
       </button>
       {menu &&
@@ -61,7 +67,7 @@ export function BranchSelect({
               {options.map((b) => (
                 <button type="button" key={b} onClick={() => pick(b)}>
                   <span className="tab-menu__check">{b === value ? '✓' : ''}</span>
-                  {b}
+                  {optionLabel(b)}
                 </button>
               ))}
               {allowCustom && (

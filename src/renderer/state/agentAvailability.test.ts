@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  enabledAgentChoices,
   firstEnabledAgent,
   launchableDefaultAgent,
   removeCustomAgent,
@@ -127,5 +128,34 @@ describe('launchableDefaultAgent', () => {
     expect(
       launchableDefaultAgent({ disabledAgents: [], defaultAgent: 'custom:gone', customAgents: [] })
     ).toBe('claude')
+  })
+})
+
+// The picker behind "New agent in new worktree…": the same set and order as the add menus' rows.
+describe('enabledAgentChoices', () => {
+  it('lists every enabled builtin in canonical order, then custom agents in the user\'s order', () => {
+    const out = enabledAgentChoices({
+      disabledAgents: [],
+      customAgents: [custom('b', 'Bravo'), custom('a', 'Alpha')]
+    })
+    expect(out.map((o) => o.id)).toEqual([...ALL_BUILTINS, 'custom:b', 'custom:a'])
+    expect(out[0]).toEqual({ id: 'claude', label: 'Claude Code' })
+    expect(out.slice(-2).map((o) => o.label)).toEqual(['Bravo', 'Alpha'])
+  })
+
+  it('leaves out what the user switched off — builtin or custom', () => {
+    const out = enabledAgentChoices({
+      disabledAgents: ['codex', 'custom:b'],
+      customAgents: [custom('b', 'Bravo'), custom('a', 'Alpha')]
+    })
+    expect(out.map((o) => o.id)).not.toContain('codex')
+    expect(out.map((o) => o.id)).not.toContain('custom:b')
+    expect(out.map((o) => o.id)).toContain('custom:a')
+  })
+
+  it('is empty when every agent is off (the dialog then refuses to create)', () => {
+    expect(
+      enabledAgentChoices({ disabledAgents: [...ALL_BUILTINS, 'custom:a'], customAgents: [custom('a')] })
+    ).toEqual([])
   })
 })

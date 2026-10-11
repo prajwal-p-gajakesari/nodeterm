@@ -1,5 +1,5 @@
 import type { Settings } from '@shared/types'
-import { agentConfig, BUILTIN_AGENT_IDS, type AgentId } from '@shared/agents/config'
+import { AGENT_CONFIG, agentConfig, BUILTIN_AGENT_IDS, type AgentId } from '@shared/agents/config'
 
 type Avail = Pick<Settings, 'disabledAgents' | 'defaultAgent' | 'customAgents'>
 
@@ -19,6 +19,26 @@ export function firstEnabledAgent(settings: Pick<Settings, 'disabledAgents' | 'c
   if (builtin) return builtin
   const custom = settings.customAgents.find((c) => !settings.disabledAgents.includes(c.id))
   return custom?.id ?? 'claude'
+}
+
+/**
+ * The agents a picker offers, as id + label: the enabled builtins in their canonical order, then the
+ * enabled custom agents in the user's own order — the same set and order as the add menus' "New
+ * <agent>" rows. A disabled agent is not offered at all: the user switched it off, and a picker is
+ * not the place to switch it back on.
+ */
+export function enabledAgentChoices(
+  settings: Pick<Settings, 'disabledAgents' | 'customAgents'>
+): { id: AgentId; label: string }[] {
+  return [
+    ...BUILTIN_AGENT_IDS.filter((id) => !settings.disabledAgents.includes(id)).map((id) => ({
+      id,
+      label: AGENT_CONFIG[id].label
+    })),
+    ...settings.customAgents
+      .filter((c) => !settings.disabledAgents.includes(c.id))
+      .map((c) => ({ id: c.id, label: c.label }))
+  ]
 }
 
 // Enable/disable an agent; if the current default gets disabled, reassign it.

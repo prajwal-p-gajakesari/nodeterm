@@ -74,3 +74,60 @@ export async function createBoundWorktree(
   const groupId = deps.attach(opts.target(), worktree)
   return { ok: true, groupId, worktree }
 }
+
+/**
+ * What "New agent in new worktree…" adds to the create-and-bind: one agent, asked about BEFORE git
+ * and opened INSIDE the frame in the bind's own tick. Supplied by the canvas (`agentCreateRefusal`,
+ * `openAgentInFrame`), so this module stays free of canvas state and the sequence is testable.
+ */
+export interface WorktreeAgentSteps {
+  /** Why the agent could not be opened now (`addAgentNode`'s own refusals, same wording), or null.
+   *  Asked before `git worktree add`: a refusal after it would leave a fresh worktree and an empty
+   *  frame — the two-step state this action exists to remove. */
+  refusal(): string | null
+  /** Open the agent inside the frame `attach` just returned, synchronously, so no render can drop
+   *  the fresh frame from `nodesRef` first. The node's id, or null when it was refused after all
+   *  (the frame stays bound, and the refusal was already shown). */
+  open(groupId: string): string | null
+  /** Hand the new node the selection and the keyboard. Called only once a node exists. */
+  focus(nodeId: string): void
+}
+
+export type CreateWorktreeWithAgentOutcome =
+  | { ok: true; groupId: string; worktree: GroupWorktree; nodeId: string | null }
+  | Exclude<CreateBoundWorktreeOutcome, { ok: true }>
+  /** Refused before git ran: nothing was created. */
+  | { ok: false; reason: 'agent-refused'; message: string }
+
+/**
+ * Create the worktree, bind a NEW frame to it, and open one agent inside that frame — the frame this
+ * call created, never whatever happens to be on screen. `projectId` is REQUIRED here (it is optional
+ * on `createBoundWorktree` only for the control verb's historical behaviour): git finishing after a
+ * tab switch binds nothing and opens nothing, and the worktree is left as an orphan the dialog
+ * offers again on its own project.
+ */
+export async function createWorktreeWithAgent(
+  deps: CreateBoundWorktreeDeps,
+  agent: WorktreeAgentSteps,
+  value: WorktreeCreateValue,
+  opts: { target: () => WorktreeAttachTarget; projectId: string }
+): Promise<CreateWorktreeWithAgentOutcome> {
+  const refused = agent.refusal()
+  if (refused) return { ok: false, reason: 'agent-refused', message: refused }
+  let nodeId: string | null = null
+  const out = await createBoundWorktree(
+    {
+      ...deps,
+      attach: (target, wt) => {
+        const groupId = deps.attach(target, wt)
+        nodeId = agent.open(groupId)
+        return groupId
+      }
+    },
+    value,
+    opts
+  )
+  if (!out.ok) return out
+  if (nodeId) agent.focus(nodeId)
+  return { ...out, nodeId }
+}

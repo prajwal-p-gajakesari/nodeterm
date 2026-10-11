@@ -349,7 +349,8 @@ Persistence has two layers:
   over a populated file, and this candidate has nodes.
   **Features that need a folder degrade explicitly, never silently.** Explorer, Source Control and
   Project Settings already say so in words; the add menus now do too — "New file…" and "New
-  worktree…" stay in the list DISABLED with `NEW_FILE_NO_CWD_HINT` / `WORKTREE_NO_CWD_HINT`
+  worktree…" (and "New agent in new worktree…", which shares its gate) stay in the list DISABLED
+  with `NEW_FILE_NO_CWD_HINT` / `WORKTREE_NO_CWD_HINT`
   (`lib/addMenuSpec`) instead of vanishing, and `openWorktreeDialog` refuses a cwd-less project at
   the same choke point it refuses an SSH one (the palette has no disabled state). The worktree
   dialog's "This project is not a git repository." was the wrong cause for a project that has no
@@ -6949,7 +6950,8 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
     `remote` stays top-level because it is not an agent: burying the one SSH-session entry point
     under a menu named "New agent" puts it where nobody would look.
   - **Grouping is a rearrangement, never a filter, and a nested row keeps its REASON.** The rows
-    still come from `contentAddItemsToMenuItems`, so `New worktree…` is greyed with
+    still come from `contentAddItemsToMenuItems`, so `New worktree…` (and `New agent in new
+    worktree…` beside it, through the same `worktreeRowGate`) is greyed with
     `WORKTREE_SSH_HINT` inside `Orchestrate ▸` exactly as it was at the top level (the cap drops
     nested submenus, never a leaf's `disabled`/`hint`). Tests pin that nothing becomes unreachable.
   **Per surface**: the pane right-click and the sessions-sidebar project-header "+" share the
@@ -7253,7 +7255,8 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
   (`cwdForNewNodeIn`) — the frame *is* the binding, so an agent per branch is just a group per
   branch. Creation is **one step** — **"New worktree…"** from the pane menu / command palette /
   Source Control — with the repo resolved from the project cwd via `git.repoRoot()` and existing
-  worktrees listed for adoption. (Both git IPCs existed before this feature and had **zero**
+  worktrees listed for adoption; **"New agent in new worktree…"** (below) is the same dialog with an
+  agent picker, so the frame comes with its agent already inside. (Both git IPCs existed before this feature and had **zero**
   renderer callers, which is why it was unusable: the dialog's repo field was always empty and had
   to be typed by hand. Don't re-strand them.)
   - **Default location** — `settings.worktreePathTemplate` is a machine-global Behavior setting,
@@ -7264,12 +7267,14 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
     worktrees beside — not nested inside — the main checkout. There is no general project-settings
     surface today, so the setting is intentionally global rather than hidden in a one-off menu.
   - **One create-and-bind** (`renderer/lib/worktreeCreate.ts`, `createBoundWorktree`) — the New
-    worktree dialog, the `open-worktree` verb and the issue card's "Start with agent in a new
-    worktree" all create through it: `git worktree add` (a REJECTED call becomes a failure, never a
-    throw out of the caller), then `attachWorktree`. The frame's place is asked only once git
+    worktree dialog (both intents), the `open-worktree` verb and the issue card's "Start with agent
+    in a new worktree" all create through it: `git worktree add` (a REJECTED call becomes a failure,
+    never a throw out of the caller), then `attachWorktree`. The frame's place is asked only once git
     succeeded. `projectId` opts in to the "the canvas moved on during the await" refusal: the dialog
-    and the issue action pass it; `open-worktree` does not, and still binds to whatever is on screen
-    when git returns (unchanged, and a known gap). `git worktree add` is reached from ONE place
+    and the issue action pass it (`createWorktreeWithAgent` REQUIRES it); `open-worktree` does not,
+    and still binds to whatever is on screen when git returns (unchanged, and a known gap). Both
+    agent-in-a-frame paths open the agent through ONE `openAgentInFrame` (placement, setup hold,
+    frame growth); the issue wrapper only adds the issue binding and its run history. `git worktree add` is reached from ONE place
     (`worktreeCreateDeps`), pinned by `canvas/issue-worktree.source.test.ts`. Three same-tick rules
     the issue action rests on: `attachWorktree` writes the new frame into `nodesRef` beside its
     `setNodes`, so a caller can open a node INTO a frame it just made; it closes the frame's setup
@@ -7279,6 +7284,28 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
     and `addAgentNode` parents the node BEFORE `setNodes`, never inside the updater, because the
     updater runs at render time and a zustand-flushed SyncLane render may already have mirrored
     `nodesRef` back to a list without the fresh frame (the `nodesEpoch` lesson).
+  - **New agent in new worktree…** (`AddItem` `worktree-agent`, under `Orchestrate ▸` beside New
+    worktree…; ⌘K; the Dock as "Agent in new worktree…") — the New worktree dialog in its `agent`
+    intent. The picker offers the enabled agents in the add menus' order (`enabledAgentChoices`) and
+    preselects what a bare "New agent" opens here (`resolveNewNodeAgent`: the project's default,
+    else the global one). **No account is picked**: `addAgentNode` resolves it exactly as a bare
+    "New <agent>" does (Claude → `resolveNewNodeAccount`, i.e. the project's default account; Codex
+    → its fail-closed gate); pinning a specific account is a per-node pick from the frame's own
+    menu. `createWorktreeWithAgent` (`lib/worktreeCreate`) asks `agentCreateRefusal` BEFORE git (a
+    refusal after it would leave an empty frame — the two-step state this removes), then creates
+    through `createBoundWorktree` and opens the agent INSIDE the attach, so it lands in the frame
+    this call made, in the same tick (the `nodesEpoch` rule), with its launch held on that frame's
+    setup like the issue action's. A git failure or a refusal leaves nothing and is shown inline
+    with the dialog open; a project switch during git leaves the orphan worktree and says so. The
+    node is then selected and handed the keyboard through `useTerminalFocus` (latent until it
+    mounts) — not `focusNodeById`, which needs it in `nodesRef` and on a miss selects nothing (it
+    looks for the id in other projects instead). Gate: everything that refuses New worktree… refuses this row too, with the same
+    reason (`worktreeRowGate`), **plus a shared (relay) tab** (`WORKTREE_AGENT_RELAY_HINT`): the
+    agent is opened while `attachWorktree` holds the frame's setup gate, so its start is ALWAYS
+    held, and a relay tab cannot release a held start. This intent only creates; adopting an
+    existing worktree stays with New worktree…. Surfaces: Desktop and Server Edition (renderer
+    only, existing bridges); the kanban column "+" is not a consumer of the spec (the agent node is
+    an ordinary session card); Mobile N/A like every worktree affordance.
   - **Where a worktree may land** (`@shared/worktree-location`) — `worktree.basePath` can come from
     `.nodeterm/settings.json`, the git-SHARED project settings file, i.e. written by anyone who can
     commit to the repository, and `git worktree add` writes the whole tree there. Pointed at

@@ -11,8 +11,11 @@ import {
   FILES_NO_CWD_HINT,
   RUN_SSH_HINT,
   NEW_FILE_NO_CWD_HINT,
+  WORKTREE_AGENT_LABEL,
+  WORKTREE_AGENT_RELAY_HINT,
   WORKTREE_NO_CWD_HINT,
   WORKTREE_SSH_HINT,
+  type AddCtx,
   type AddItem,
   type AddHandlers,
   type AgentAddEntry
@@ -36,6 +39,7 @@ const handlers = (overrides: Partial<AddHandlers> = {}): AddHandlers => ({
   newFile: noop,
   spawnTeam: noop,
   worktree: noop,
+  worktreeAgent: noop,
   ...overrides
 })
 
@@ -52,7 +56,8 @@ const allKinds: AddItem['kind'][] = [
   'open-file',
   'new-file',
   'spawn-team',
-  'worktree'
+  'worktree',
+  'worktree-agent'
 ]
 
 describe('Run configuration row', () => {
@@ -97,7 +102,8 @@ describe('contentAddItemsToMenuItems', () => {
       'Open file…',
       'New file…',
       'Spawn a team…',
-      'New worktree…'
+      'New worktree…',
+      WORKTREE_AGENT_LABEL
     ])
   })
 
@@ -168,7 +174,8 @@ describe('contentAddItemsToMenuItems', () => {
       sticky: () => calls.push('sticky'),
       dino: () => calls.push('dino'),
       spawnTeam: () => calls.push('spawnTeam'),
-      worktree: () => calls.push('worktree')
+      worktree: () => calls.push('worktree'),
+      worktreeAgent: () => calls.push('worktreeAgent')
     })
     const items = contentAddItemsToMenuItems(CONTENT_ADD_ITEMS, h, {
       hasCwd: true,
@@ -177,7 +184,16 @@ describe('contentAddItemsToMenuItems', () => {
     for (const item of items) {
       if ('onClick' in item) item.onClick()
     }
-    expect(calls.sort()).toEqual(['browser', 'dino', 'spawnTeam', 'sticky', 'terminal', 'web', 'worktree'])
+    expect(calls.sort()).toEqual([
+      'browser',
+      'dino',
+      'spawnTeam',
+      'sticky',
+      'terminal',
+      'web',
+      'worktree',
+      'worktreeAgent'
+    ])
   })
 })
 
@@ -200,7 +216,8 @@ describe('contentAddItemsToDockRows', () => {
       'open-file',
       'new-file',
       'spawn-team',
-      'worktree'
+      'worktree',
+      'worktree-agent'
     ])
     expect(rows.some((r) => r.kind === 'terminal')).toBe(false)
     expect(rows.some((r) => r.kind === 'remote')).toBe(false)
@@ -329,7 +346,8 @@ describe('buildGroupedAddMenu', () => {
     expect(children(ADD_GROUP_LABEL.orchestrate)).toEqual([
       'New trigger…',
       'Spawn a team…',
-      SSH_GATED_ROW
+      SSH_GATED_ROW,
+      WORKTREE_AGENT_LABEL
     ])
     expect(children(AGENT_GROUP_LABEL)).toEqual(['New Gemini', 'New Grok', 'New My Agent'])
   })
@@ -458,7 +476,8 @@ describe('buildGroupedAddMenu', () => {
       openFile: () => calls.push('openFile'),
       newFile: () => calls.push('newFile'),
       spawnTeam: () => calls.push('spawnTeam'),
-      worktree: () => calls.push('scopedCheckout')
+      worktree: () => calls.push('scopedCheckout'),
+      worktreeAgent: () => calls.push('worktreeAgent')
     })
     const items = buildGroupedAddMenu(CONTENT_ADD_ITEMS, h, ctx, agents)
     for (const item of items) {
@@ -479,7 +498,96 @@ describe('buildGroupedAddMenu', () => {
       'sticky',
       'terminal',
       'trigger',
-      'web'
+      'web',
+      'worktreeAgent'
     ])
+  })
+})
+
+// ─── "New agent in new worktree…" ────────────────────────────────────────────────────────────
+// The one-step worktree + frame + agent row. It can only run where "New worktree…" can, so it is
+// refused for exactly the same projects, with exactly the same reason, on every surface.
+
+describe('the agent-in-new-worktree row', () => {
+  const menuRow = (ctx: AddCtx, h = handlers(), at?: { x: number; y: number }) =>
+    contentAddItemsToMenuItems([{ kind: 'worktree-agent' }], h, ctx, at)[0]
+  const dockRow = (ctx: AddCtx, h = handlers()) =>
+    contentAddItemsToDockRows([{ kind: 'worktree-agent' }], h, ctx)[0]
+
+  it('is enabled in a local project with a folder, on the menu and the Dock', () => {
+    const ctx = { hasCwd: true, isSshProject: false }
+    expect(menuRow(ctx)).toMatchObject({ label: WORKTREE_AGENT_LABEL, disabled: false, hint: undefined })
+    expect(dockRow(ctx)).toMatchObject({ kind: 'worktree-agent', disabled: false, hint: undefined })
+  })
+
+  it('is DISABLED with the SSH reason in an SSH project — never hidden', () => {
+    const ctx = { hasCwd: true, isSshProject: true }
+    expect(menuRow(ctx)).toMatchObject({ disabled: true, hint: WORKTREE_SSH_HINT })
+    expect(dockRow(ctx)).toMatchObject({ disabled: true, hint: WORKTREE_SSH_HINT })
+  })
+
+  it('is DISABLED with the no-folder reason in a cwd-less project — never hidden', () => {
+    const ctx = { hasCwd: false, isSshProject: false }
+    expect(menuRow(ctx)).toMatchObject({ disabled: true, hint: WORKTREE_NO_CWD_HINT })
+    expect(dockRow(ctx)).toMatchObject({ disabled: true, hint: WORKTREE_NO_CWD_HINT })
+  })
+
+  it('names the SSH reason when the project is SSH AND has no folder', () => {
+    const ctx = { hasCwd: false, isSshProject: true }
+    expect(menuRow(ctx)).toMatchObject({ disabled: true, hint: WORKTREE_SSH_HINT })
+    expect(dockRow(ctx)).toMatchObject({ disabled: true, hint: WORKTREE_SSH_HINT })
+  })
+
+  it('is refused wherever "New worktree…" is, with the same reason, on both adapters', () => {
+    const pick = (r: { disabled?: boolean; hint?: string }) => ({ disabled: r.disabled, hint: r.hint })
+    let refusedShapes = 0
+    for (const hasCwd of [true, false]) {
+      for (const isSshProject of [true, false]) {
+        for (const isRelayTab of [true, false]) {
+          const ctx = { hasCwd, isSshProject, isRelayTab }
+          const both: AddItem[] = [{ kind: 'worktree' }, { kind: 'worktree-agent' }]
+          const [plain, withAgent] = contentAddItemsToMenuItems(both, handlers(), ctx) as {
+            disabled?: boolean
+            hint?: string
+          }[]
+          const [dockPlain, dockAgent] = contentAddItemsToDockRows(both, handlers(), ctx)
+          if (!plain.disabled) continue
+          refusedShapes++
+          expect(pick(withAgent)).toEqual(pick(plain))
+          expect(pick(dockAgent)).toEqual(pick(dockPlain))
+        }
+      }
+    }
+    // SSH (with/without a folder) and no-folder, each in a local and a shared tab.
+    expect(refusedShapes).toBe(6)
+  })
+
+  it('is DISABLED with its own reason in a shared (relay) tab, where "New worktree…" still works', () => {
+    const ctx = { hasCwd: true, isSshProject: false, isRelayTab: true }
+    expect(menuRow(ctx)).toMatchObject({ disabled: true, hint: WORKTREE_AGENT_RELAY_HINT })
+    expect(dockRow(ctx)).toMatchObject({ disabled: true, hint: WORKTREE_AGENT_RELAY_HINT })
+    const [plain] = contentAddItemsToMenuItems([{ kind: 'worktree' }], handlers(), ctx)
+    expect(plain).toMatchObject({ label: 'New worktree…', disabled: false, hint: undefined })
+    const [dockPlain] = contentAddItemsToDockRows([{ kind: 'worktree' }], handlers(), ctx)
+    expect(dockPlain).toMatchObject({ disabled: false, hint: undefined })
+  })
+
+  it('opens its own flow — at the menu cursor on the canvas, at the default spot from the Dock', () => {
+    const calls: unknown[] = []
+    const h = handlers({
+      worktree: () => calls.push('plain worktree'),
+      worktreeAgent: (at) => calls.push(at)
+    })
+    const ctx = { hasCwd: true, isSshProject: false }
+    const row = menuRow(ctx, h, { x: 40, y: 80 })
+    if ('onClick' in row) row.onClick()
+    const dock = dockRow(ctx, h)
+    dock.onClick()
+    expect(calls).toEqual([{ x: 40, y: 80 }, undefined])
+  })
+
+  it('sits under Orchestrate, beside "New worktree…"', () => {
+    expect(ADD_ITEM_GROUP['worktree-agent']).toBe('orchestrate')
+    expect(ADD_ITEM_GROUP['worktree-agent']).toBe(ADD_ITEM_GROUP.worktree)
   })
 })

@@ -67,7 +67,8 @@ export type AddItem =
   | { kind: 'open-file' }
   | { kind: 'new-file' } // requiresCwd
   | { kind: 'spawn-team' }
-  | { kind: 'worktree' } // disabledOnSsh
+  | { kind: 'worktree' } // disabledOnSsh, requiresCwd
+  | { kind: 'worktree-agent' } // disabledOnSsh, requiresCwd — a new worktree with an agent in it
 
 /**
  * The canonical content list, in the order the pane menu established (the most-complete surface):
@@ -89,15 +90,19 @@ export const CONTENT_ADD_ITEMS: readonly AddItem[] = [
   { kind: 'open-file' },
   { kind: 'new-file' },
   { kind: 'spawn-team' },
-  { kind: 'worktree' }
+  { kind: 'worktree' },
+  { kind: 'worktree-agent' }
 ] as const
 
 /** Project context that gates which items show / are disabled. */
 export interface AddCtx {
   /** Whether the active project has a cwd (local folder or SSH remoteCwd). Gates "New file…". */
   hasCwd: boolean
-  /** Whether the active project is an SSH project. Disables "New worktree…". */
+  /** Whether the active project is an SSH project. Disables both worktree rows. */
   isSshProject: boolean
+  /** Whether the active project is a shared (relay) tab — another machine's canvas. Disables only
+   *  the agent-in-new-worktree row (`WORKTREE_AGENT_RELAY_HINT`). Absent reads as a local tab. */
+  isRelayTab?: boolean
 }
 
 /**
@@ -125,6 +130,9 @@ export interface AddHandlers {
   /** Opens the Spawn-a-team dialog (issue #78); `at` is where the conductor node will land. */
   spawnTeam: (at?: AddPos) => void
   worktree: (at?: AddPos) => void
+  /** Opens the New worktree dialog with an agent picker: the worktree, its frame and one agent
+   *  inside it in one step. `at` is where the frame lands. */
+  worktreeAgent: (at?: AddPos) => void
 }
 
 /** The SSH worktree hint shown on the disabled row — kept here so every surface shows the same one. */
@@ -146,6 +154,39 @@ export const NEW_FILE_NO_CWD_HINT = 'This project has no folder — set one firs
 export const WORKTREE_NO_CWD_HINT = NEW_FILE_NO_CWD_HINT
 /** Same reason, same fix — a file manager has nothing to list without a project folder. */
 export const FILES_NO_CWD_HINT = NEW_FILE_NO_CWD_HINT
+
+/** The one-step "worktree + frame + agent" row, spelled once for the add menus and the ⌘K palette
+ *  (the Dock's rows use their own shorter names). */
+export const WORKTREE_AGENT_LABEL = 'New agent in new worktree…'
+
+/**
+ * Why that row is off in a shared (relay) tab. The agent is opened into the frame in the same tick
+ * the frame is bound, while the frame's setup (shared paths, the project's setup script) is still
+ * pending — so its start is always HELD on that setup, and a shared tab cannot release a held start
+ * (the node only says to open the host). The issue card's "Start with agent in a new worktree" is
+ * refused there on the same mechanism. Plain "New worktree…" holds nothing and stays available.
+ */
+export const WORKTREE_AGENT_RELAY_HINT =
+  'Not available in a shared tab — the agent’s start waits on the new worktree’s setup, which a shared tab cannot release'
+
+/**
+ * Whether a worktree row can run in this project, and the reason when it cannot. Both worktree rows
+ * (plain, and with an agent) on every surface read this one gate, so the two can never disagree
+ * about when a worktree is possible. An SSH project's reason wins over a missing folder: a project
+ * that is both would still be refused after a folder was set.
+ */
+function worktreeRowGate(ctx: AddCtx): { disabled: boolean; hint: string | undefined } {
+  const hint = ctx.isSshProject ? WORKTREE_SSH_HINT : ctx.hasCwd ? undefined : WORKTREE_NO_CWD_HINT
+  return { disabled: !!hint, hint }
+}
+
+/** The agent row: refused wherever "New worktree…" is (with the same reason), and additionally in
+ *  a shared tab, where the plain row still works. */
+function worktreeAgentRowGate(ctx: AddCtx): { disabled: boolean; hint: string | undefined } {
+  const plain = worktreeRowGate(ctx)
+  if (plain.disabled || !ctx.isRelayTab) return plain
+  return { disabled: true, hint: WORKTREE_AGENT_RELAY_HINT }
+}
 
 /**
  * Map the canonical content list to {@link MenuItem}s for the `ContextMenu` component.
@@ -234,13 +275,16 @@ export function contentAddItemsToMenuItems(
         out.push({
           label: 'New worktree…',
           icon: <IconBranch />,
-          disabled: ctx.isSshProject || !ctx.hasCwd,
-          hint: ctx.isSshProject
-            ? WORKTREE_SSH_HINT
-            : ctx.hasCwd
-              ? undefined
-              : WORKTREE_NO_CWD_HINT,
+          ...worktreeRowGate(ctx),
           onClick: () => handlers.worktree(at)
+        })
+        break
+      case 'worktree-agent':
+        out.push({
+          label: WORKTREE_AGENT_LABEL,
+          icon: <IconBranch />,
+          ...worktreeAgentRowGate(ctx),
+          onClick: () => handlers.worktreeAgent(at)
         })
         break
     }
@@ -341,13 +385,17 @@ export function contentAddItemsToDockRows(
           kind: 'worktree',
           label: 'Worktree…',
           icon: <IconBranch />,
-          disabled: ctx.isSshProject || !ctx.hasCwd,
-          hint: ctx.isSshProject
-            ? WORKTREE_SSH_HINT
-            : ctx.hasCwd
-              ? undefined
-              : WORKTREE_NO_CWD_HINT,
+          ...worktreeRowGate(ctx),
           onClick: () => handlers.worktree()
+        })
+        break
+      case 'worktree-agent':
+        out.push({
+          kind: 'worktree-agent',
+          label: 'Agent in new worktree…',
+          icon: <IconBranch />,
+          ...worktreeAgentRowGate(ctx),
+          onClick: () => handlers.worktreeAgent()
         })
         break
     }
@@ -396,7 +444,8 @@ export const ADD_ITEM_GROUP: Record<AddItem['kind'], AddGroupId> = {
   'new-file': 'files',
   'spawn-team': 'orchestrate',
   trigger: 'orchestrate',
-  worktree: 'orchestrate'
+  worktree: 'orchestrate',
+  'worktree-agent': 'orchestrate'
 }
 
 /** Submenu labels, kept here so every surface names the same group the same way. */

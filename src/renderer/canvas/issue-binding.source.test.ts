@@ -147,9 +147,13 @@ describe('Start with agent (issue card)', () => {
 
   it('in a new worktree: the title reaches ONLY the branch planner, never a prompt or a launch line', () => {
     const open = code(between('const openIssueAgentInFrame = useCallback(', 'const startIssueAgentInWorktree = useCallback('))
-    expect(open).toContain('start.prompt,')
-    expect(open).toContain('{ issueRef: start.ref, awaitSetupGroup: setupHoldGroup(groupId) }')
+    expect(open).toMatch(/openAgentInFrame\(groupId, agentId, accountId, \{\s*prompt: start\.prompt,\s*issueRef: start\.ref\s*\}\)/)
     expect(open).not.toMatch(/issue\.title|issue\.body/)
+    // The shared open-into-frame helper types only what it was handed — it has no issue to read.
+    const shared = code(between('const openAgentInFrame = useCallback(', 'const attachWorktree = useCallback('))
+    expect(shared).toContain('start?.prompt,')
+    expect(shared).toContain('{ issueRef: start?.issueRef, awaitSetupGroup: setupHoldGroup(groupId) }')
+    expect(shared).not.toMatch(/issue\.title|issue\.body/)
     const body = code(between('const startIssueAgentInWorktree = useCallback(', 'const issueWorktreeMenu = useCallback('))
     expect(body).toContain('issueStartPrompt(issue)')
     // Exactly one read of the title: the slug input of `planIssueWorktree` (@shared/issue-worktree

@@ -134,6 +134,19 @@ export function frameAgentPlacement(
 }
 
 /**
+ * The size of a NEW worktree frame that is about to receive its first agent: room for that agent's
+ * slot (`frameAgentPlacement`), and never smaller than a plain worktree frame (`min`). Shared by
+ * the issue card's action and "New agent in new worktree…", so both frames come out the same.
+ */
+export function agentFrameSize(
+  node: { width: number; height: number },
+  min: { width: number; height: number }
+): { width: number; height: number } {
+  const { frame } = frameAgentPlacement({ x: 0, y: 0 }, 0, node)
+  return { width: Math.max(min.width, frame.width), height: Math.max(min.height, frame.height) }
+}
+
+/**
  * Run `task` unless one is already running under `key`; `false` = refused (a start for this issue is
  * in flight). Held across EVERYTHING the start awaits — the planning reads AND a create confirmed
  * from the reuse-or-new dialog — so a second click while git works cannot plan against the store as

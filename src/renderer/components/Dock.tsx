@@ -9,6 +9,7 @@ import { AgentIcon } from '../lib/agentIcons'
 import { useSettings } from '../state/settings'
 import { useProjects } from '../state/projects'
 import { accountsForProject, sshAccountsHint } from '../state/workspace'
+import { sessionForProject } from '../session/session'
 import { CONTENT_ADD_ITEMS, contentAddItemsToDockRows, type AddHandlers } from '../lib/addMenuSpec'
 import { layoutSubtitle, sortedLayouts } from '../lib/canvasLayoutView'
 import { ZOOM_PRESETS, activeZoomPreset } from '../lib/zoomPresets'
@@ -42,6 +43,8 @@ interface DockProps {
   onAddWeb: () => void
   onNewFile: () => void
   onAddWorktree: () => void
+  /** "Agent in new worktree…": the New worktree dialog with an agent picker. */
+  onAddWorktreeAgent: () => void
   onUndo: () => void
   onRedo: () => void
   onGoBack: () => void
@@ -91,6 +94,7 @@ export function Dock({
   onAddWeb,
   onNewFile,
   onAddWorktree,
+  onAddWorktreeAgent,
   onUndo,
   onRedo,
   onGoBack,
@@ -186,6 +190,7 @@ export function Dock({
   // remote-connection is a different flow than the pane menu's remote picker).
   const hasCwd = !!(activeProject?.ssh?.remoteCwd ?? activeProject?.cwd)
   const isSshProject = !!activeProject?.ssh
+  const isRelayTab = !!activeProject && sessionForProject(activeProject.id).source === 'relay'
   const dockAddHandlers: AddHandlers = {
     terminal: onAddTerminal,
     remote: onAddRemote,
@@ -199,11 +204,13 @@ export function Dock({
     run: onAddRun,
     openFile: onOpenFile,
     newFile: onNewFile,
-    worktree: onAddWorktree
+    worktree: onAddWorktree,
+    worktreeAgent: onAddWorktreeAgent
   }
   const contentRows = contentAddItemsToDockRows(CONTENT_ADD_ITEMS, dockAddHandlers, {
     hasCwd,
-    isSshProject
+    isSshProject,
+    isRelayTab
   })
 
   return (

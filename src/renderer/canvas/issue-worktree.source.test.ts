@@ -151,9 +151,13 @@ describe('Start with agent in a new worktree', () => {
   })
 
   it('places the agent through frameAgentPlacement (a CENTER), never a raw slot', () => {
-    const open = between('const openIssueAgentInFrame = useCallback(', 'const startIssueAgentInWorktree = useCallback(')
+    // The placement lives in the open-into-frame helper the issue action shares with "New agent in
+    // new worktree…"; the issue wrapper only adds the issue binding and its run history.
+    const open = between('const openAgentInFrame = useCallback(', 'const attachWorktree = useCallback(')
     expect(open).toContain('const { center } = frameAgentPlacement(origin, children, terminalNodeSize())')
     expect(open).not.toContain('groupSlot(')
+    const issue = between('const openIssueAgentInFrame = useCallback(', 'const startIssueAgentInWorktree = useCallback(')
+    expect(issue).toContain('const created = openAgentInFrame(groupId, agentId, accountId, {')
   })
 })
 
@@ -183,7 +187,7 @@ describe('the setup hold is one rule', () => {
   it('control opens and the issue action ask the same helper', () => {
     const arm = between('const armAfter = (', 'const addGrouped = (')
     expect(arm).toContain('const awaitSetupGroup = setupHoldGroup(intoGroup)')
-    const open = between('const openIssueAgentInFrame = useCallback(', 'const startIssueAgentInWorktree = useCallback(')
+    const open = between('const openAgentInFrame = useCallback(', 'const attachWorktree = useCallback(')
     expect(open).toContain('awaitSetupGroup: setupHoldGroup(groupId)')
     const add = between('const addAgentNode = useCallback(', 'const issueRef = normalizeIssueRef(extra?.issueRef)')
     expect(add).toContain('awaitSetupGroup?: string')

@@ -218,6 +218,8 @@ import {
 import { planServerChange } from '../lib/serverChange'
 import {
   CONTENT_ADD_ITEMS,
+  WORKTREE_AGENT_LABEL,
+  WORKTREE_AGENT_RELAY_HINT,
   agentEntriesToMenuItems,
   buildGroupedAddMenu,
   type AgentAddEntry,
@@ -590,6 +592,7 @@ import type { GitHubIssueCardView as DispatchIssueCard } from '@shared/github-is
 import { planIssueWorktree } from '@shared/issue-worktree'
 import { sharedBasePathOf, sharedWorktreeLocationRefusal } from '@shared/worktree-location'
 import {
+  agentFrameSize,
   frameAgentPlacement,
   issueWorktreeChoiceCopy,
   issueWorktreeFrames,
@@ -662,9 +665,11 @@ import { lookupPullRequests, pullBoardFor, useGitHubIssues } from '../state/gith
 import { usePullChase } from '../components/kanban/usePullAutoMove'
 import {
   createBoundWorktree,
+  createWorktreeWithAgent,
   type CreateBoundWorktreeDeps,
   type WorktreeAttachTarget
 } from '../lib/worktreeCreate'
+import { enabledAgentChoices } from '../state/agentAvailability'
 import {
   WAIT_LABEL, dropAfterDep, edgeHidden, hiddenEdgeNodeIds, markLegacyWaitRopes, missingDepRopes, pruneRopes,
   ropeInfoOf, ropeVisual, waitRopeId
@@ -1699,6 +1704,9 @@ export function Canvas() {
      *  the meantime would otherwise bind the new worktree to a group on ANOTHER project's canvas
      *  (a different repo entirely). */
     projectId: string
+    /** "New agent in new worktree…": the dialog also picks an agent, and confirming opens it inside
+     *  the new frame (`createWorktreeWithAgent`). Never set together with `groupId`. */
+    withAgent?: boolean
   } | null>(null)
   const [worktreeBusy, setWorktreeBusy] = useState(false)
   const [worktreeError, setWorktreeError] = useState<string | null>(null)
@@ -7347,7 +7355,7 @@ export function Canvas() {
   )
 
   const openWorktreeDialog = useCallback(
-    (groupId: string | null, at?: { x: number; y: number }) => {
+    (groupId: string | null, at?: { x: number; y: number }, opts?: { withAgent?: boolean }) => {
       const projectId = useProjects.getState().activeProjectId
       if (!projectId) return
       // The single choke point for opening the dialog — the menus already render their rows
@@ -7366,8 +7374,18 @@ export function Canvas() {
         setNotice({ kind: 'error', text: WORKTREE_NO_CWD_NOTICE })
         return
       }
+      // Third reason, the agent variant only: in a shared tab the agent's held start could never be
+      // released (WORKTREE_AGENT_RELAY_HINT). The menus grey the row; the palette cannot.
+      if (opts?.withAgent && sessionForProject(projectId).source === 'relay') {
+        setNotice({ kind: 'error', text: `${WORKTREE_AGENT_RELAY_HINT}.` })
+        return
+      }
       setWorktreeError(null)
-      setWorktreeDialog({ groupId, at, projectId })
+      // With an agent the frame is always a NEW one: the agent opens into the frame this create
+      // makes, never into an existing group (that group's own menu opens agents into it).
+      setWorktreeDialog(
+        opts?.withAgent ? { groupId: null, at, projectId, withAgent: true } : { groupId, at, projectId }
+      )
       // Fresh branch list for the Base / existing-branch dropdown. Clear first so a previous repo's
       // branches can't flash; fetch fire-and-forget (a failed read just leaves the field free-text).
       setWorktreeBranches([])
@@ -7380,6 +7398,61 @@ export function Canvas() {
       }
     },
     []
+  )
+
+  /**
+   * Open an agent INTO a worktree frame, in the same tick the frame was made (or found) — the issue
+   * card's "Start with agent in a new worktree" and "New agent in new worktree…" both land here.
+   * Synchronous on purpose: `attachWorktree` has just put the frame in `nodesRef`, and a render in
+   * between — a zustand write flushes one — would mirror the ref back to a node list without it,
+   * so the agent's cwd would fall back to the project folder. The slot is the control opens' grid
+   * (`frameAgentPlacement`), and the frame grows to hold the node as actually built. Returns what
+   * `addAgentNode` returned (undefined = refused, and it already said why).
+   */
+  const openAgentInFrame = useCallback(
+    (
+      groupId: string,
+      agentId: AgentId,
+      accountId: string | null | undefined,
+      start?: { prompt: string; issueRef: IssueRef }
+    ): ReturnType<typeof addAgentNode> => {
+      const all = nodesRef.current
+      const group = all.find((n) => n.id === groupId)
+      if (!group) return undefined
+      const children = all.filter((n) => n.parentId === groupId).length
+      const origin = absolutePosition(group as FocusableNode, all as FocusableNode[])
+      const { center } = frameAgentPlacement(origin, children, terminalNodeSize())
+      const created = addAgentNode(
+        agentId,
+        center,
+        groupId,
+        accountId,
+        start?.prompt,
+        // A frame whose setup script is still preparing the checkout holds the launch, exactly like
+        // a control open into it; a frame with nothing to prepare launches at once.
+        { issueRef: start?.issueRef, awaitSetupGroup: setupHoldGroup(groupId) }
+      )
+      if (!created) return undefined
+      // Grow the frame to hold the node as BUILT (snap-to-grid can round its size up). Queued after
+      // the node's own insert, so both land in one render; `extent: 'parent'` then has room.
+      const built = created.node
+      const { frame } = frameAgentPlacement(origin, children, {
+        width: (built.width as number | undefined) ?? terminalNodeSize().width,
+        height: (built.height as number | undefined) ?? terminalNodeSize().height
+      })
+      const width = Math.max((group.width as number | undefined) ?? 0, frame.width)
+      const height = Math.max((group.height as number | undefined) ?? 0, frame.height)
+      if (width !== group.width || height !== group.height) {
+        const grow = (ns: CanvasNode[]): CanvasNode[] =>
+          ns.map((n) =>
+            n.id === groupId ? { ...n, width, height, style: { ...n.style, width, height } } : n
+          )
+        nodesRef.current = grow(nodesRef.current)
+        setNodes((ns) => grow(ns as CanvasNode[]))
+      }
+      return created
+    },
+    [setNodes, addAgentNode, setupHoldGroup]
   )
 
   // Bind the worktree to an EXISTING group, or create a group around a new one. A group node
@@ -7469,7 +7542,7 @@ export function Canvas() {
   )
 
   const createWorktreeAndGroup = useCallback(
-    async (v: WorktreeCreateValue) => {
+    async (v: WorktreeCreateValue, agentId?: AgentId) => {
       const target = worktreeDialog
       if (!target) return
       // The dialog's suggested path can come from the git-shared settings file: a location it
@@ -7483,6 +7556,62 @@ export function Canvas() {
       })
       if (locationRefusal) {
         setWorktreeError(locationRefusal)
+        return
+      }
+      // "New agent in new worktree…": the same create, plus one agent opened INSIDE the frame it
+      // makes, in the bind's own tick. Refusals that would come after git (an unusable Codex
+      // account, a canvas that is not the active project's) are asked before it, and every failure
+      // that leaves nothing on the canvas is reported inline with the dialog still open.
+      if (target.withAgent) {
+        if (!agentId) return // Create is disabled in this mode until an agent is picked
+        setWorktreeBusy(true)
+        setWorktreeError(null)
+        const res = await createWorktreeWithAgent(
+          worktreeCreateDeps(),
+          {
+            // No account is picked here: `addAgentNode` resolves it exactly as a bare "New <agent>"
+            // does — Claude through `resolveNewNodeAccount` (the project's default account), Codex
+            // through its fail-closed gate.
+            refusal: () => agentCreateRefusal(agentId, undefined),
+            open: (groupId) => openAgentInFrame(groupId, agentId, undefined)?.node.id ?? null,
+            // Not `focusNodeById`: the node is not in `nodesRef` yet (it lands with the next render),
+            // and a miss there selects nothing (it goes looking for the id in other projects). The
+            // frame was placed on screen, so the camera stays; the terminal-focus request waits for
+            // the node to mount.
+            focus: (nodeId) => {
+              setNodes((ns) => ns.map((n) => ({ ...n, selected: n.id === nodeId })))
+              useTerminalFocus.getState().request(nodeId)
+            }
+          },
+          v,
+          {
+            // Asked only once git succeeded, against the canvas as it is then: at the cursor the menu
+            // was opened at, else a free spot centred on the view — sized for the agent's slot.
+            target: () => {
+              const size = agentFrameSize(terminalNodeSize(), WORKTREE_GROUP_SIZE)
+              return {
+                groupId: null,
+                at: target.at ?? emptyNodePos({ w: size.width, h: size.height }),
+                size
+              }
+            },
+            projectId: target.projectId
+          }
+        )
+        setWorktreeBusy(false)
+        if (!res.ok && res.reason !== 'project-changed') {
+          setWorktreeError(
+            res.reason === 'git' && res.rejected ? `Could not create the worktree: ${res.message}` : res.message
+          )
+          return
+        }
+        setWorktreeDialog(null)
+        if (!res.ok) {
+          setNotice({
+            kind: 'info',
+            text: `Created worktree ${v.branch} at ${v.path}. The project changed, so no group or agent was started.`
+          })
+        }
         return
       }
       setWorktreeBusy(true)
@@ -7516,7 +7645,7 @@ export function Canvas() {
       }
       setWorktreeDialog(null)
     },
-    [worktreeCreateDeps, worktreeDialog]
+    [worktreeCreateDeps, worktreeDialog, agentCreateRefusal, openAgentInFrame, setNodes, emptyNodePos]
   )
 
   const bindExistingWorktree = useCallback(
@@ -10754,7 +10883,8 @@ export function Canvas() {
     () => ({
       hasCwd: !!(useProjects.getState().getProject(activeProjectId)?.ssh?.remoteCwd ??
         useProjects.getState().getProject(activeProjectId)?.cwd),
-      isSshProject
+      isSshProject,
+      isRelayTab: sessionForProject(activeProjectId ?? '').source === 'relay'
     }),
     [activeProjectId, isSshProject]
   )
@@ -10772,7 +10902,8 @@ export function Canvas() {
       openFile: (at) => void openFileDialog(at),
       newFile: (at) => void newProjectFile(at),
       spawnTeam: (at) => setSpawnTeamDialog({ at }),
-      worktree: (at) => openWorktreeDialog(null, at)
+      worktree: (at) => openWorktreeDialog(null, at),
+      worktreeAgent: (at) => openWorktreeDialog(null, at, { withAgent: true })
     }),
     [
       addTerminal,
@@ -11723,13 +11854,7 @@ export function Canvas() {
     })
   }, [])
 
-  /**
-   * Open the issue's agent INTO a worktree frame, in the same tick the frame was made (or found).
-   * Synchronous on purpose: `attachWorktree` has just put the frame in `nodesRef`, and a render in
-   * between — a zustand write flushes one — would mirror the ref back to a node list without it,
-   * so the agent's cwd would fall back to the project folder. The slot is the control opens' grid
-   * (`frameAgentPlacement`), and the frame grows to hold the node as actually built.
-   */
+  /** The issue card's agent INTO a worktree frame (`openAgentInFrame`), filed under its issue. */
   const openIssueAgentInFrame = useCallback(
     (
       groupId: string,
@@ -11738,44 +11863,15 @@ export function Canvas() {
       agentId: AgentId,
       accountId: string | null | undefined
     ): boolean => {
-      const all = nodesRef.current
-      const group = all.find((n) => n.id === groupId)
-      if (!group) return false
-      const children = all.filter((n) => n.parentId === groupId).length
-      const origin = absolutePosition(group as FocusableNode, all as FocusableNode[])
-      const { center } = frameAgentPlacement(origin, children, terminalNodeSize())
-      const created = addAgentNode(
-        agentId,
-        center,
-        groupId,
-        accountId,
-        start.prompt,
-        // A frame whose setup script is still preparing the checkout holds the launch, exactly like
-        // a control open into it; a frame with nothing to prepare launches at once.
-        { issueRef: start.ref, awaitSetupGroup: setupHoldGroup(groupId) }
-      )
-      if (!created) return false // addAgentNode already said why
-      // Grow the frame to hold the node as BUILT (snap-to-grid can round its size up). Queued after
-      // the node's own insert, so both land in one render; `extent: 'parent'` then has room.
-      const built = created.node
-      const { frame } = frameAgentPlacement(origin, children, {
-        width: (built.width as number | undefined) ?? terminalNodeSize().width,
-        height: (built.height as number | undefined) ?? terminalNodeSize().height
+      const created = openAgentInFrame(groupId, agentId, accountId, {
+        prompt: start.prompt,
+        issueRef: start.ref
       })
-      const width = Math.max((group.width as number | undefined) ?? 0, frame.width)
-      const height = Math.max((group.height as number | undefined) ?? 0, frame.height)
-      if (width !== group.width || height !== group.height) {
-        const grow = (ns: CanvasNode[]): CanvasNode[] =>
-          ns.map((n) =>
-            n.id === groupId ? { ...n, width, height, style: { ...n.style, width, height } } : n
-          )
-        nodesRef.current = grow(nodesRef.current)
-        setNodes((ns) => grow(ns as CanvasNode[]))
-      }
+      if (!created) return false // addAgentNode already said why
       fileIssueSession(issue.columnId, start.ref, created, agentId)
       return true
     },
-    [setNodes, addAgentNode, setupHoldGroup, fileIssueSession]
+    [openAgentInFrame, fileIssueSession]
   )
 
   /**
@@ -11829,12 +11925,7 @@ export function Canvas() {
         defaults,
         useSettings.getState().settings.worktreePathTemplate
       )
-      const size = terminalNodeSize()
-      const { frame: need } = frameAgentPlacement({ x: 0, y: 0 }, 0, size)
-      const frame = {
-        width: Math.max(WORKTREE_GROUP_SIZE.width, need.width),
-        height: Math.max(WORKTREE_GROUP_SIZE.height, need.height)
-      }
+      const frame = agentFrameSize(terminalNodeSize(), WORKTREE_GROUP_SIZE)
       const newFrame = (): WorktreeAttachTarget => ({
         groupId: null,
         at: emptyNodePos({ w: frame.width, h: frame.height }),
@@ -17947,6 +18038,19 @@ export function Canvas() {
         note: isSshProject ? WORKTREE_SSH_HINT : undefined,
         run: () => openWorktreeDialog(null)
       },
+      {
+        // The add menus' "New agent in new worktree…" (lib/addMenuSpec), refused at the same choke
+        // point with the same reason as the row above.
+        id: 'worktree-new-agent',
+        label: WORKTREE_AGENT_LABEL,
+        icon: <IconBranch />,
+        note: isSshProject
+          ? WORKTREE_SSH_HINT
+          : sessionForProject(activeProjectId ?? '').source === 'relay'
+            ? WORKTREE_AGENT_RELAY_HINT
+            : undefined,
+        run: () => openWorktreeDialog(null, undefined, { withAgent: true })
+      },
       ...(useSettings.getState().settings.debugLogPanel
         ? [
             {
@@ -19393,9 +19497,22 @@ export function Canvas() {
 
       {worktreeDialog && (
         <WorktreeDialog
+          // Remount when the mode changes under an open dialog: the agent pick is initial state.
+          key={worktreeDialog.withAgent ? 'agent' : 'worktree'}
           // Opened from a group's "Bind to worktree…" (groupId set) vs. the pane/palette's
-          // "New worktree…" — the header and the primary button say which.
-          intent={worktreeDialog.groupId ? 'bind' : 'create'}
+          // "New worktree…" vs. "New agent in new worktree…" — the header and the primary button
+          // say which.
+          intent={worktreeDialog.withAgent ? 'agent' : worktreeDialog.groupId ? 'bind' : 'create'}
+          // The agent rows the add menus offer, preselecting what a bare "New agent" opens here:
+          // this project's default agent, else the global one.
+          agents={
+            worktreeDialog.withAgent
+              ? {
+                  options: enabledAgentChoices(settings),
+                  defaultId: resolveNewNodeAgent(undefined, worktreeDialog.projectId, settings)
+                }
+              : undefined
+          }
           repoPath={worktreeRepoRoot ?? ''}
           existing={worktreeOrphans.filter((e) => !boundWorktreePaths.has(normWorktreePath(e.path)))}
           defaultBaseRef={effectiveWorktreeBaseRef(activeWorktreeDefaults, worktreeEntries)}
@@ -19558,6 +19675,7 @@ export function Canvas() {
         onAddWeb={() => void addWebView()}
         onNewFile={() => void newProjectFile()}
         onAddWorktree={() => openWorktreeDialog(null)}
+        onAddWorktreeAgent={() => openWorktreeDialog(null, undefined, { withAgent: true })}
         onSave={persist}
         onFitView={fitAll}
         onSaveLayout={() => void saveCanvasLayout()}

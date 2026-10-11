@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useDialogStack } from './dialog-stack'
 import { BranchSelect } from './BranchSelect'
+import type { AgentId } from '@shared/agents/config'
 import {
   filterWorktrees,
   isValidGitRef,
@@ -9,10 +10,21 @@ import {
   type WorktreeEntry
 } from '@shared/worktree'
 
+/** One row of the agent picker ("New agent in new worktree…"). */
+export interface WorktreeAgentOption {
+  id: AgentId
+  label: string
+}
+
 interface Props {
   /** 'create' = the pane/palette entry point (a new group frame); 'bind' = an existing group's
-   *  "Bind to worktree…". Only the wording differs — both can create or adopt a worktree. */
-  intent: 'create' | 'bind'
+   *  "Bind to worktree…". Only the wording differs — both can create or adopt a worktree.
+   *  'agent' = "New agent in new worktree…": create only (no adopt list — that is "New worktree…"),
+   *  plus the agent to open inside the new frame. */
+  intent: 'create' | 'bind' | 'agent'
+  /** `intent: 'agent'` only — the agents offered and the one preselected (the project's default
+   *  agent, else the global one). A default that is not offered falls back to the first option. */
+  agents?: { options: WorktreeAgentOption[]; defaultId: AgentId }
   /** Repo root, resolved from the project cwd. Empty only when the project is not a git repo. */
   repoPath: string
   /** Worktrees that already exist for this repo, excluding the main checkout and bound ones. */
@@ -27,7 +39,8 @@ interface Props {
   defaultPath: (repoPath: string, branch: string) => string
   busy: boolean
   error: string | null
-  onCreate: (v: WorktreeCreateValue) => void
+  /** `agentId` is set exactly when `intent` is 'agent'. */
+  onCreate: (v: WorktreeCreateValue, agentId?: AgentId) => void
   onBindExisting: (e: WorktreeEntry) => void
   onCancel: () => void
 }
@@ -35,6 +48,7 @@ interface Props {
 /** Create a worktree (and the group frame around it), or bind a group to one that already exists. */
 export function WorktreeDialog({
   intent,
+  agents,
   repoPath,
   existing,
   defaultBaseRef,
@@ -58,6 +72,14 @@ export function WorktreeDialog({
   const [path, setPath] = useState(() => defaultPath(repoPath, 'feature/'))
   const [pathEdited, setPathEdited] = useState(false)
   const [existingQuery, setExistingQuery] = useState('')
+  const withAgent = intent === 'agent'
+  const agentOptions = withAgent ? (agents?.options ?? []) : []
+  const [agentId, setAgentId] = useState<AgentId | ''>(() => {
+    const preferred = agents?.defaultId
+    return preferred && agentOptions.some((o) => o.id === preferred)
+      ? preferred
+      : (agentOptions[0]?.id ?? '')
+  })
 
   // Keep the path in sync with the branch until the user edits it by hand.
   useEffect(() => {
@@ -99,9 +121,18 @@ export function WorktreeDialog({
   // can't be submitted). The red error, by contrast, only appears once the user has touched the
   // field (`branchEdited`): a fresh dialog must not accuse the user of a bad name they never typed.
   const branchInvalid = !!branch.trim() && !isValidGitRef(branch)
-  const valid = !!repoPath.trim() && !!branch.trim() && !branchInvalid && !!path.trim() && !busy
-  const title = intent === 'bind' ? 'Bind to worktree' : 'New worktree'
-  const createLabel = intent === 'bind' ? 'Create & bind' : 'Create'
+  // With an agent, Create also needs one picked: every agent switched off leaves nothing to open,
+  // and creating the worktree anyway would be the empty frame this mode exists to avoid.
+  const valid =
+    !!repoPath.trim() &&
+    !!branch.trim() &&
+    !branchInvalid &&
+    !!path.trim() &&
+    !busy &&
+    (!withAgent || !!agentId)
+  const title =
+    intent === 'bind' ? 'Bind to worktree' : withAgent ? 'New agent in new worktree' : 'New worktree'
+  const createLabel = intent === 'bind' ? 'Create & bind' : withAgent ? 'Create & start' : 'Create'
 
   return createPortal(
     <div className="confirm-overlay" onClick={onCancel}>
@@ -112,7 +143,25 @@ export function WorktreeDialog({
           {repoPath || 'This project is not a git repository.'}
         </div>
 
-        {existing.length > 0 && (
+        {withAgent && (
+          <div className="bind-field">
+            Agent
+            {agentOptions.length > 0 ? (
+              <BranchSelect
+                value={agentId}
+                options={agentOptions.map((o) => o.id)}
+                optionLabel={(id) => agentOptions.find((o) => o.id === id)?.label ?? id}
+                placeholder="Select an agent…"
+                onChange={(v) => setAgentId(v)}
+              />
+            ) : (
+              <div className="bind-error">No agent is enabled — turn one on in Settings → Agents.</div>
+            )}
+          </div>
+        )}
+
+        {/* Adopting an existing worktree is "New worktree…"'s job; this mode only creates. */}
+        {!withAgent && existing.length > 0 && (
           <div className="bind-existing">
             <div className="bind-existing__title">Existing worktrees</div>
             <input
@@ -262,13 +311,16 @@ export function WorktreeDialog({
             className="confirm__btn primary"
             disabled={!valid}
             onClick={() =>
-              onCreate({
-                repoPath: repoPath.trim(),
-                mode,
-                branch: branch.trim(),
-                baseRef: baseRef.trim(),
-                path: path.trim()
-              })
+              onCreate(
+                {
+                  repoPath: repoPath.trim(),
+                  mode,
+                  branch: branch.trim(),
+                  baseRef: baseRef.trim(),
+                  path: path.trim()
+                },
+                withAgent && agentId ? agentId : undefined
+              )
             }
           >
             {busy ? 'Creating…' : createLabel}

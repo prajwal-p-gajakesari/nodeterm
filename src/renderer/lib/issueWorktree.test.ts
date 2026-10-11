@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { createAgentNode, terminalNodeSize } from '../state/workspace'
 import { GROUP_PAD_TOP, GROUP_PAD_X } from './coldOpen'
 import {
+  agentFrameSize,
   frameAgentPlacement,
   issueWorktreeFrames,
   runExclusive,
@@ -109,6 +110,17 @@ describe('issueWorktreeRenamedNotice', () => {
     expect(issueWorktreeRenamedNotice('issue-12-fix', 'issue-12-fix-2')).toBe(
       'issue-12-fix was already taken (a local or remote branch, or a folder, of that name exists), so the new worktree is issue-12-fix-2.'
     )
+  })
+})
+
+describe('agentFrameSize', () => {
+  it('is room for the first agent\'s slot, never smaller than a plain worktree frame', () => {
+    const node = { width: 640, height: 440 }
+    const slot = frameAgentPlacement({ x: 0, y: 0 }, 0, node).frame
+    // A small minimum: the agent's slot decides.
+    expect(agentFrameSize(node, { width: 100, height: 100 })).toEqual(slot)
+    // A large minimum: the plain frame's size decides, per axis.
+    expect(agentFrameSize(node, { width: 5000, height: 10 })).toEqual({ width: 5000, height: slot.height })
   })
 })
 
