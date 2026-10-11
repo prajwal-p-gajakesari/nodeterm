@@ -231,6 +231,75 @@ describe('SettingsStore nested-default merge', () => {
     })
   })
 
+  describe('needs-you notification toggle seeded from the old single toggle', () => {
+    // `notifyOnClaudeDone` used to gate the needs-you notification too. An upgrade must notify
+    // exactly as before: the new key takes the old toggle's answer until the user sets it.
+    const loadWith = (saved: Record<string, unknown>): Settings => {
+      writeFileSync(path.join(dir, 'settings.json'), JSON.stringify(saved), 'utf-8')
+      const store = new SettingsStore()
+      store.init()
+      return store.get()
+    }
+
+    it('someone who turned notifications off does not start getting needs-you banners', () => {
+      // The discriminating case: the shipped default for the new key is ON.
+      expect(DEFAULT_SETTINGS.notifyOnNeedsYou).toBe(true)
+      expect(loadWith({ notifyOnClaudeDone: false, notifyConsentAsked: true })).toMatchObject({
+        notifyOnClaudeDone: false,
+        notifyOnNeedsYou: false
+      })
+    })
+
+    it('someone who had notifications on keeps needs-you notifications on', () => {
+      expect(loadWith({ notifyOnClaudeDone: true, notifyConsentAsked: true }).notifyOnNeedsYou).toBe(true)
+    })
+
+    it('an explicit needs-you choice wins over the old toggle, in both directions', () => {
+      expect(loadWith({ notifyOnClaudeDone: false, notifyOnNeedsYou: true }).notifyOnNeedsYou).toBe(true)
+      expect(loadWith({ notifyOnClaudeDone: true, notifyOnNeedsYou: false }).notifyOnNeedsYou).toBe(false)
+    })
+
+    it('a hand-edited non-boolean is re-seeded from the old toggle, never read as truthy', () => {
+      expect(loadWith({ notifyOnClaudeDone: false, notifyOnNeedsYou: 'yes' }).notifyOnNeedsYou).toBe(false)
+    })
+
+    it('is one-shot: a saved choice survives the next load', async () => {
+      const store = new SettingsStore()
+      store.init()
+      await store.save({ ...DEFAULT_SETTINGS, notifyOnClaudeDone: true, notifyOnNeedsYou: false })
+      const reloaded = new SettingsStore()
+      reloaded.init()
+      expect(reloaded.get()).toMatchObject({ notifyOnClaudeDone: true, notifyOnNeedsYou: false })
+    })
+
+    it('leaves the focused-window opt-in off for an existing file', () => {
+      expect(loadWith({ notifyOnClaudeDone: true }).notifyWhileFocused).toBe(false)
+    })
+  })
+
+  describe('Dock badge mode', () => {
+    const loadWith = (saved: Record<string, unknown>): Settings => {
+      writeFileSync(path.join(dir, 'settings.json'), JSON.stringify(saved), 'utf-8')
+      const store = new SettingsStore()
+      store.init()
+      return store.get()
+    }
+
+    it("an existing file keeps today's badge: unread", () => {
+      expect(loadWith({ notifyOnClaudeDone: true }).dockBadgeMode).toBe('unread')
+    })
+
+    it('keeps a chosen mode', () => {
+      expect(loadWith({ dockBadgeMode: 'needs-you' }).dockBadgeMode).toBe('needs-you')
+      expect(loadWith({ dockBadgeMode: 'off' }).dockBadgeMode).toBe('off')
+    })
+
+    it('normalizes a hand-edited value to the default, never to off', () => {
+      expect(loadWith({ dockBadgeMode: 'OFF' }).dockBadgeMode).toBe('unread')
+      expect(loadWith({ dockBadgeMode: 3 }).dockBadgeMode).toBe('unread')
+    })
+  })
+
   describe('dictation chord seed (one-shot migration)', () => {
     // Same disk fixture as the sibling describes: write a settings.json, load it through the real
     // store, read the merged result back.

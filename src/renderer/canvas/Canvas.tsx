@@ -19,6 +19,8 @@ import { useMirrorIdentitySeed } from './useMirrorIdentitySeed'
 import { useShallow } from 'zustand/react/shallow'
 import { playSfx, primeSfx } from '@renderer/lib/sfx'
 import { fanoutStillWorking } from '@renderer/lib/completionAlert'
+import { decideAgentAlert, notifyConsentPatch, type AgentAlertKind } from '@renderer/lib/agentAlert'
+import { dockBadgeCount } from '@shared/dock-badge'
 import { publishCanvasZoom } from '@renderer/lib/canvasZoomVar'
 import {
   addEdge,
@@ -4986,17 +4988,16 @@ export function Canvas() {
     if (valid.length !== linkEdges.length) setLinkEdges(valid)
   }, [linkEdges, nodes, setLinkEdges])
 
-  // Reflect Claude nodes with unread output as a macOS Dock badge count (across all projects).
-  // Subscribes to the derived count (a primitive), not the byId map, for the same reason as
-  // loopSig above — state flips must not re-render the canvas.
-  const unreadCount = useAgentStatus((s) => {
-    let count = 0
-    for (const st of Object.values(s.byId)) if (st?.unread) count++
-    return count
-  })
+  // The macOS Dock badge (across all projects). What it counts is `settings.dockBadgeMode`
+  // (@shared/dock-badge): unread nodes (the default), nodes waiting on the user right now, or
+  // nothing — 'off' still SENDS 0, which is what clears a badge already showing. Subscribes to the
+  // derived count (a primitive), not the byId map, for the same reason as loopSig above — state
+  // flips must not re-render the canvas.
+  const dockBadgeMode = useSettings((s) => s.settings.dockBadgeMode)
+  const dockBadge = useAgentStatus((s) => dockBadgeCount(s.byId, dockBadgeMode))
   useEffect(() => {
-    window.nodeTerminal.setBadgeCount(unreadCount)
-  }, [unreadCount])
+    window.nodeTerminal.setBadgeCount(dockBadge)
+  }, [dockBadge])
 
   // Feed per-session context-window fill from main into the transient store.
   useEffect(() => {
@@ -16330,7 +16331,8 @@ export function Canvas() {
   // is still away: a window focus in between drops the fold, so the next turn end chimes as always.
   useEffect(() => installHandoffFocusReset(window), [])
   // Sound effects have their OWN cooldown: they fire whether or not the window is focused, so they
-  // can't share the notification one (which only ticks in the background).
+  // can't share the notification one (which only ticks when a notification is raised — in the
+  // background, or for a needs-you under `notifyWhileFocused`).
   const sfxCooldownRef = useRef<Record<string, number>>({})
   useEffect(() => {
     // Notification context = the node's folder name (or its title).
@@ -16385,51 +16387,46 @@ export function Canvas() {
       const alert = (
         statusText: string,
         fallbackBody: string,
-        sound: 'done' | 'needsYou',
+        sound: AgentAlertKind,
         opts?: { quiet?: boolean }
       ) => {
-        // Unread unless the user is actively in this node's terminal (focused window +
-        // this node is the active terminal). So a finish while you're in another terminal,
-        // or with nothing focused, still flags unread.
-        //
-        // `opts.quiet` reaches this function BELOW this block on purpose (issue #708): it silences
-        // the two INTERRUPTS (chime, OS notification) and never the unread record or its ack. See
-        // `fanoutStillWorking` — a dot is a different fact from a chime.
-        const watching = document.hasFocus() && cs.activeId === e.nodeId
-        if (!watching) cs.markUnread(e.nodeId)
-        // Watched it finish? Then it is already read. Nothing marks it unread in this branch, so
-        // without an explicit ack there would never BE a read signal — and the notch capsule's
-        // green blob and the phone's Live Activity would keep glowing for a turn the user sat and
-        // watched end. The mirror no-ops when there is no unresolved done event.
-        else if (sound === 'done') void window.nodeTerminal.ackDone(e.nodeId)
-        // Everything from here down is an INTERRUPT, and this is where a quiet alert stops. The
-        // unread dot and its ack above are deliberately on the other side of this line.
-        if (opts?.quiet) return
-        // An agent that just filed its card into a handoff column was already announced to the
-        // assignee (the `assign` verb's handoff ping); its turn end seconds later is the same moment.
-        if (sound === 'done' && suppressDoneAfterHandoff(e.nodeId, Date.now())) return
-        // Sound first: it is the one alert that also fires while you're in the app but looking at
-        // another node — the case OS notifications deliberately skip.
-        const snd = useSettings.getState().settings
-        if (snd.soundEffects) {
-          const t = Date.now()
-          if (t - (sfxCooldownRef.current[e.nodeId] ?? 0) >= 5000) {
-            sfxCooldownRef.current[e.nodeId] = t
-            playSfx(sound, snd.soundVolume, snd.customAlertSounds)
-          }
-        }
-        // OS notification only when the whole window is in the background.
-        if (document.hasFocus()) return
-        const s = useSettings.getState().settings
-        if (!(s.notifyOnClaudeDone && s.notifyConsentAsked)) return
+        // The decision — unread record, read ack, chime, OS notification — is `decideAgentAlert`
+        // (lib/agentAlert.ts, behaviour-tested there). This closure only gathers the facts and
+        // applies the answer; keep it that way, it is the part no test can dispatch at.
         const now = Date.now()
-        if (now - (notifyCooldownRef.current[e.nodeId] ?? 0) < 5000) return // dedup/cooldown
-        notifyCooldownRef.current[e.nodeId] = now
-        void window.nodeTerminal.notify({
-          title: `${contextFor(e.nodeId)} — ${agentLabel} ${statusText}`,
-          body: clip(e.lastMessage) || fallbackBody,
-          nodeId: e.nodeId
+        const snd = useSettings.getState().settings
+        const d = decideAgentAlert({
+          kind: sound,
+          windowFocused: document.hasFocus(),
+          activeNode: cs.activeId === e.nodeId,
+          // Issue #708 (`fanoutStillWorking`): silences the chime and the notification, never the
+          // unread record or its ack — a dot is a different fact from a chime.
+          quiet: opts?.quiet,
+          // Asked lazily: asking CONSUMES the fold, so only an interrupting `done` may ask.
+          handoffFolded: () => suppressDoneAfterHandoff(e.nodeId, now),
+          prefs: snd,
+          now,
+          lastSoundAt: sfxCooldownRef.current[e.nodeId],
+          lastNotifyAt: notifyCooldownRef.current[e.nodeId]
         })
+        if (d.markUnread) cs.markUnread(e.nodeId)
+        // The mirror no-ops when there is no unresolved done event.
+        if (d.ackDone) void window.nodeTerminal.ackDone(e.nodeId)
+        if (d.sound) {
+          sfxCooldownRef.current[e.nodeId] = now
+          playSfx(sound, snd.soundVolume, snd.customAlertSounds)
+        }
+        if (d.notify) {
+          notifyCooldownRef.current[e.nodeId] = now
+          void window.nodeTerminal.notify({
+            title: `${contextFor(e.nodeId)} — ${agentLabel} ${statusText}`,
+            body: clip(e.lastMessage) || fallbackBody,
+            nodeId: e.nodeId,
+            // Only the `notifyWhileFocused` branch: without it main drops a notification raised
+            // while its window is focused, which is exactly when that opt-in fires.
+            ...(d.force ? { force: true } : {})
+          })
+        }
       }
       const an = useAgentNodes.getState()
       switch (e.kind) {
@@ -16759,7 +16756,8 @@ export function Canvas() {
   useEffect(() => {
     if (!settingsHydrated || !seenOnboarding) return
     if (useSettings.getState().settings.notifyConsentAsked) return
-    useSettings.getState().update({ notifyConsentAsked: true, notifyOnClaudeDone: false })
+    // Recorded as declined until the dialog says otherwise — both kinds (notifyConsentPatch).
+    useSettings.getState().update(notifyConsentPatch(false))
     setConsentOpen(true)
   }, [settingsHydrated, seenOnboarding])
 
@@ -19135,7 +19133,7 @@ export function Canvas() {
               seenShortcuts: true,
               // Skipping the tour is also a consent answer — the standalone dialog must not
               // pop right on top of a just-skipped setup. Re-decidable in Settings.
-              ...(s.notifyConsentAsked ? {} : { notifyConsentAsked: true, notifyOnClaudeDone: false })
+              ...(s.notifyConsentAsked ? {} : notifyConsentPatch(false))
             })
           }}
         />
@@ -19624,10 +19622,10 @@ export function Canvas() {
       {consentOpen && (
         <NotifyConsentDialog
           onEnable={() => {
-            useSettings.getState().update({ notifyOnClaudeDone: true })
+            useSettings.getState().update(notifyConsentPatch(true))
             void window.nodeTerminal.notify({
               title: 'Notifications enabled',
-              body: "You'll be told when Claude Code finishes in the background.",
+              body: "You'll be told when an agent finishes or needs you in the background.",
               nodeId: '',
               force: true
             })

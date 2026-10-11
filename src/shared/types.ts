@@ -30,6 +30,7 @@ import type { CodexAccount } from './codex-account'
 import type { NotchAlign } from './notch-hud'
 import type { ProjectIcon, ProjectIconPickResult } from './project-icon'
 import type { AlertSoundKind, AlertSoundSaveResult, CustomAlertSounds } from './alert-sound'
+import type { DockBadgeMode } from './dock-badge'
 import type { CanvasLayout, LayoutViewports } from './canvas-layout'
 import type { ShareTeamApi } from './share-team'
 import type {
@@ -2053,8 +2054,23 @@ export interface Settings {
    *  installs (seenShortcuts already true) are migrated to true silently — the tour is for
    *  fresh installs; rerunnable via the ⌘K "Setup tour" command. */
   seenOnboarding: boolean
-  /** Notify (OS notification) when a Claude Code turn finishes while the app is in the background. */
+  /** Notify (OS notification) when an agent's turn finishes while the app is in the background.
+   *  Also gates the board's handoff pings (lib/handoffPings) — both announce finished work. */
   notifyOnClaudeDone: boolean
+  /** Notify (OS notification) when an agent NEEDS YOU — an approval (`blocked`) or a question
+   *  (`waiting`). Split out of `notifyOnClaudeDone`, which used to gate both: a settings.json that
+   *  predates this key is seeded from that one on load (core `mergeSettings`), so an upgrade changes
+   *  nothing. Same consent gate (`notifyConsentAsked`) as the finish notification. */
+  notifyOnNeedsYou: boolean
+  /** Raise the needs-you notification even while nodeterm is the focused window, when the session
+   *  is not the terminal the user is in (lib/agentAlert's "watching" rule — the unread rule's).
+   *  Rides `NotifyPayload.force` past main's focused-window skip. Default off: needs-you
+   *  notifications stay background-only unless the user opts in. Finished turns never use it. */
+  notifyWhileFocused: boolean
+  /** What the Dock icon badge counts: `'unread'` (default — nodes with the unread flag),
+   *  `'needs-you'` (nodes waiting on an approval or a question right now, independent of unread) or
+   *  `'off'`. See `@shared/dock-badge`; read through `dockBadgeModeOf` (hand-editable). */
+  dockBadgeMode: DockBadgeMode
   /** Periodically `git fetch` while the Source Control panel is open, so ahead/behind stays
    *  accurate (remote/SSH projects fetch on the remote). */
   gitAutoFetch: boolean
@@ -2367,6 +2383,9 @@ export const DEFAULT_SETTINGS: Settings = {
   seenShortcuts: false,
   seenOnboarding: false,
   notifyOnClaudeDone: true,
+  notifyOnNeedsYou: true,
+  notifyWhileFocused: false,
+  dockBadgeMode: 'unread',
   gitAutoFetch: true,
   notifyConsentAsked: false,
   soundEffects: true,
@@ -2854,7 +2873,8 @@ export interface NotifyPayload {
   body: string
   /** Node to focus/center when the notification is clicked. */
   nodeId: string
-  /** Show even when the window is focused (used to trigger the macOS permission prompt). */
+  /** Show even when the window is focused: the test notification that triggers the macOS
+   *  permission prompt, and a needs-you alert under `settings.notifyWhileFocused`. */
   force?: boolean
 }
 
@@ -4309,8 +4329,10 @@ export interface NodeTerminalApi {
   getPathForFile(file: File): string
   /** Absolute writable base dir (Electron userData) for app-managed files like default worktrees. */
   userDataDir(): Promise<string>
-  /** Show an OS notification (main suppresses it if the window is focused). 'failed' =
-   *  the OS rejected it (e.g. macOS permission denied) — surface it, don't ignore it. */
+  /** Show an OS notification (main suppresses it if the window is focused, unless
+   *  `payload.force`). 'failed' = the OS rejected it (e.g. macOS permission denied) — surface it,
+   *  don't ignore it. Server Edition: the browser's Notification API, which ignores `force` and
+   *  focus alike — the renderer's own gate (lib/agentAlert) is the whole decision there. */
   notify(payload: NotifyPayload): Promise<'shown' | 'failed' | 'skipped'>
   /** Open the OS notification settings pane (macOS; no-op elsewhere) to re-grant permission. */
   openNotificationSettings(): Promise<void>

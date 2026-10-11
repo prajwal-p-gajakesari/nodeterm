@@ -2721,8 +2721,9 @@ else, and its context links must keep classifying across restarts).
   (`normalizeClaude`/`normalizeCodex`/`normalizeGemini`/`normalizeCopilot`/`normalizeOpencode`/`normalizeGrok`/`normalizeAntigravity`) that map each agent's native hook
   events to a `NormalizedAgentEvent` over the shared `AgentState` (`working | waiting | blocked
   | done`) plus subagent/recurring/session kinds. Canvas's listener consumes
-  `NormalizedAgentEvent` from `agent:status`, drives the `agentStatus` store, fires throttled
-  (5s/node) background notifications, and records the session id. Header shows a pulsing
+  `NormalizedAgentEvent` from `agent:status`, drives the `agentStatus` store, runs the alert
+  decision (`renderer/lib/agentAlert.ts`: unread, chime, throttled 5 s/node notifications — see
+  "Unread + notification"), and records the session id. Header shows a pulsing
   **RUNNING** (working) / **NEEDS YOU** (waiting/blocked) badge.
 - **DROPPED — the CLI died and nobody told us** (`renderer/terminal/agent-liveness.ts`, issue #616).
   Every ORDERLY exit announces itself: Eco's `/exit` sets `hibernated`, "Pause session" sets
@@ -3288,18 +3289,49 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   (`ensureClaudeFullscreenTui{,Into}`), and the remote host + account dirs on SSH connect
   (`RemoteHooks.ensureFullscreenTui{,InAccountDir}`, gated on the connection's cached remote probe).
   **Grok has no analogue** — it runs full-screen by default, so there is nothing to write.
-- **Unread + notification** — on a busy→idle edge while the window is unfocused
-  (`document.hasFocus()`), the node is marked unread (header dot, minimap stroke, project-tab
-  dot). If notifications are enabled, `window.nodeTerminal.notify()` → main `app:notify`
-  (shown only when `mainWin.isFocused()` is false); clicking it focuses the window and sends
-  `app:focus-node` → `Canvas.focusNodeById` (selects + centers, switching projects via
-  `pendingFocusRef` if needed). A one-time consent prompt gates notifications; toggle in
-  Settings (`notifyOnClaudeDone`). Selecting, focusing, dwelling into, or opening a session card
-  clears `unread` and ACKs the finish across phone/notch surfaces — existing read-on-view behavior.
-  This NEVER changes the workflow bucket: read state is independent from agent state.
+- **Unread + notification** — every turn end (`done`) and every needs-you (`waiting`/`blocked`)
+  runs ONE pure decision, `decideAgentAlert` (`renderer/lib/agentAlert.ts`); Canvas's `alert`
+  closure only gathers the facts and applies the answer — keep new rules out of the closure, it is
+  the part no test can dispatch at. The node is marked unread (header dot, minimap stroke,
+  project-tab dot) unless the user is WATCHING it: window focused (`document.hasFocus()`) AND it is
+  the active terminal (`agentStatus.activeId`); a watched finish is acked instead. OS
+  notifications: a finish under `notifyOnClaudeDone`, a needs-you under `notifyOnNeedsYou` — split
+  out of the former, which used to gate both, and seeded from it by core `mergeSettings` when a
+  saved file lacks the key, so an upgrade notifies exactly as before. Both need the one-time
+  consent answer (`notifyConsentAsked`), keep a 5 s/node cooldown, and are background-only:
+  `window.nodeTerminal.notify()` → main `app:notify`, which skips while `mainWin.isFocused()` unless
+  the payload carries `force`. The ONE branch that sets `force` is the opt-in `notifyWhileFocused`
+  (default off): a needs-you for a node the user is not watching notifies while the window is
+  focused — never for a finish (the chime covers that) and never for the watched node. The #708
+  quiet gate and the handoff fold silence the chime and the notification only, never the unread
+  record; the fold is a callback because asking consumes it. **Every consent site** (first-run
+  dialog, the tour's step, the tour's skip) writes BOTH toggles through `notifyConsentPatch`: the
+  needs-you toggle ships ON, so a site that answered only the finish toggle would leave a user who
+  declined with needs-you banners (`canvas/agent-alert.wiring.test.ts`). Board handoff pings and
+  live-link `control-taken` keep their own gates (finish toggle + consent; consent alone).
+  Clicking a notification focuses the window and sends `app:focus-node` → `Canvas.focusNodeById`
+  (selects + centers, switching projects via `pendingFocusRef` if needed). Selecting, focusing,
+  dwelling into, or opening a session card clears `unread` and ACKs the finish across phone/notch
+  surfaces — existing read-on-view behavior. This NEVER changes the workflow bucket: read state is
+  independent from agent state. Server Edition: the bridge's `notify` is the browser Notification
+  API (only once the browser has granted permission), which ignores `force` and focus — the
+  renderer's decision is the whole gate there. Mobile push has its own toggles (`mobilePush*`),
+  untouched by these.
+- **Dock badge** (`settings.dockBadgeMode`, `@shared/dock-badge`) — `'unread'` (default: the unread
+  flags above), `'needs-you'` (live `waiting`/`blocked`, exactly what the header's NEEDS YOU shows,
+  independent of unread — looking at a still-blocked node does not drop it) or `'off'` (still SENDS
+  0, which is what clears a badge already showing). A finished turn never counts as needs-you,
+  seen or not: that is `'unread'`'s job. The sessions sidebar's "Waiting for your response" group
+  does include `done` — it sorts by whose move it is, while the badge answers "how many agents are
+  stuck until I act". Canvas subscribes to the primitive `dockBadgeCount`, never to `byId`. Live
+  `state` is not persisted, so `'needs-you'` reads 0 after a restart until each agent's next hook
+  event. Main applies it on macOS only; the Server Edition bridge's `setBadgeCount` is a no-op, and
+  the Settings row is disabled with its reason in a browser tab and off macOS. The mode is
+  validated on load (`mergeSettings`) and at the point of use (`dockBadgeModeOf`): an unknown value
+  is `'unread'`, never `'off'`.
 - **Sound alerts + custom sounds** (issue #289) — the `done` / `needsYou` alert (`SfxKind`) is a
-  synthesized WebAudio chime (`renderer/lib/sfx.ts`, fired from Canvas's `alert` closure, gated by
-  `soundEffects`, 5 s/node cooldown). Settings → Notifications lets the user replace either with their
+  synthesized WebAudio chime (`renderer/lib/sfx.ts`, decided by `decideAgentAlert` and played from
+  Canvas's `alert` closure, gated by `soundEffects`, 5 s/node cooldown, focused or not). Settings → Notifications lets the user replace either with their
   own file. The picked file's BYTES (never its path) go to `files.saveAlertSound`, a core handler in
   `registerFsHandlers` (both shells), which validates kind / extension allow-list / 5 MB cap / magic
   bytes and writes ONE format-independent name `<userData>/sounds/<kind>.sound` (`core/alert-sounds.ts`;

@@ -5,6 +5,10 @@ import { SearchableRow } from '../SearchableRow'
 import { FieldRow } from '../FieldRow'
 import { Switch } from '@renderer/ui/Switch'
 import { Button } from '@renderer/ui/Button'
+import { Select } from '@renderer/ui/Select'
+import { isBrowserRuntime } from '@renderer/bridge/runtime'
+import { isMacPlatform } from '@shared/platform-utils'
+import { dockBadgeModeOf } from '@shared/dock-badge'
 import { checkCustomSfx, playSfx } from '@renderer/lib/sfx'
 import { readAsBase64 } from '@renderer/terminal/file-drop'
 import {
@@ -22,6 +26,14 @@ const ROWS = {
     title: 'Notify when a turn finishes in the background',
     keywords: ['notify', 'notification', 'claude', 'background', 'turn', 'done']
   },
+  needsYou: {
+    title: 'Notify when an agent needs you',
+    keywords: ['notify', 'notification', 'needs you', 'approval', 'permission', 'question', 'blocked', 'waiting', 'focused', 'foreground', 'in front', 'while using']
+  },
+  dockBadge: {
+    title: 'Dock badge',
+    keywords: ['dock', 'badge', 'icon', 'count', 'number', 'unread', 'needs you', 'waiting', 'approval', 'off']
+  },
   sound: {
     title: 'Play a sound when a turn finishes or needs you',
     keywords: ['sound', 'audio', 'sfx', 'effect', 'chime', 'beep', 'retro', '8-bit', 'chiptune', 'volume', 'mute', 'finished', 'needs you', 'custom', 'file', 'mp3', 'wav', 'own sound']
@@ -34,6 +46,45 @@ const ROWS = {
 const ENTRIES = Object.values(ROWS)
 
 const SOUND_LABELS: Record<AlertSoundKind, string> = { done: 'Finished sound', needsYou: 'Needs-you sound' }
+
+/**
+ * What the Dock icon's number counts (`settings.dockBadgeMode`, @shared/dock-badge). Kept visible
+ * but disabled, with the reason, where there is no Dock to badge: desktop main sets it on macOS
+ * only, and a Server Edition browser tab has no app icon at all (its bridge drops the count).
+ */
+function DockBadgeRow(): React.JSX.Element {
+  const dockBadgeMode = useSettings((s) => s.settings.dockBadgeMode)
+  const update = useSettings((s) => s.update)
+  const note = isBrowserRuntime()
+    ? 'The Server Edition runs in a browser tab, which has no Dock icon to badge.'
+    : !isMacPlatform()
+      ? 'Only the macOS Dock shows this badge.'
+      : undefined
+  return (
+    <FieldRow
+      label="Dock badge"
+      htmlFor="dock-badge-mode"
+      description="What the number on nodeterm's Dock icon counts. Unread: sessions with news you haven't looked at. Waiting on you: sessions showing NEEDS YOU — an approval or a question — right now, even after you've looked; a finished turn doesn't count there."
+      note={note}
+      control={
+        <Select
+          id="dock-badge-mode"
+          value={dockBadgeMode}
+          disabled={note !== undefined}
+          aria-label="Dock badge"
+          onChange={(e) => update({ dockBadgeMode: dockBadgeModeOf(e.target.value) })}
+        >
+          {/* Unread stays FIRST: it is the default, and a select whose value matches no option
+              shows its first one — so a hand-edited mode reads on screen as what dockBadgeModeOf
+              makes of it. */}
+          <option value="unread">Unread sessions</option>
+          <option value="needs-you">Waiting on you</option>
+          <option value="off">Off</option>
+        </Select>
+      }
+    />
+  )
+}
 
 /**
  * One alert kind's sound (issue #289): the built-in chime or the user's own file. The picked file's
@@ -149,6 +200,8 @@ function CustomSoundRow({ kind, volume }: { kind: AlertSoundKind; volume: number
 
 export function NotificationsSection({ isActive }: { isActive: boolean }): React.JSX.Element {
   const notifyOnClaudeDone = useSettings((s) => s.settings.notifyOnClaudeDone)
+  const notifyOnNeedsYou = useSettings((s) => s.settings.notifyOnNeedsYou)
+  const notifyWhileFocused = useSettings((s) => s.settings.notifyWhileFocused)
   const soundEffects = useSettings((s) => s.settings.soundEffects)
   const soundVolume = useSettings((s) => s.settings.soundVolume)
   const customAlertSounds = useSettings((s) => s.settings.customAlertSounds)
@@ -160,12 +213,31 @@ export function NotificationsSection({ isActive }: { isActive: boolean }): React
   const update = useSettings((s) => s.update)
   // The OS refused our test notification (macOS permission denied). macOS never re-prompts
   // once the app's record exists, so the only way back is the System Settings pane.
-  const [osBlocked, setOsBlocked] = useState(false)
+  // Kept per row, so the repair path shows under the switch that just failed — not under a row the
+  // Settings search may have filtered out.
+  const [osBlocked, setOsBlocked] = useState<AlertSoundKind | null>(null)
+  // Turning either kind on answers the one-time consent question and fires a real test
+  // notification: on a fresh install this is what triggers the macOS permission prompt; on a
+  // denied/stale record the OS rejects it and we surface the repair path below.
+  const testNotification = (kind: AlertSoundKind, body: string): void => {
+    void window.nodeTerminal
+      .notify({ title: 'Notifications enabled', body, nodeId: '', force: true })
+      .then((result) => setOsBlocked(result === 'failed' ? kind : null))
+  }
+  const osBlockedNote = (kind: AlertSoundKind): React.ReactNode =>
+    osBlocked === kind && (
+      <div className="mt-2 flex items-center gap-3 text-[13px] text-[color:var(--caution)]">
+        macOS is blocking notifications for this app.
+        <Button onClick={() => void window.nodeTerminal.openNotificationSettings()}>
+          Open System Settings
+        </Button>
+      </div>
+    )
   return (
     <SettingsSection
       id="notifications"
       title="Notifications"
-      description="Get notified when an agent finishes while the app is in the background."
+      description="Get notified when an agent finishes or needs you while the app is in the background."
       isActive={isActive}
       searchEntries={ENTRIES}
     >
@@ -175,34 +247,57 @@ export function NotificationsSection({ isActive }: { isActive: boolean }): React
           control={
             <Switch
               checked={notifyOnClaudeDone}
-              ariaLabel="Background notifications"
+              ariaLabel="Notify when a turn finishes"
               onChange={(on) => {
                 update({ notifyOnClaudeDone: on, notifyConsentAsked: true })
-                setOsBlocked(false)
-                // Enabling fires a real test notification: on a fresh install this is what
-                // triggers the macOS permission prompt; on a denied/stale record the OS
-                // rejects it and we surface the repair path below.
-                if (on)
-                  void window.nodeTerminal
-                    .notify({
-                      title: 'Notifications enabled',
-                      body: "You'll be told when Claude Code finishes in the background.",
-                      nodeId: '',
-                      force: true
-                    })
-                    .then((result) => setOsBlocked(result === 'failed'))
+                setOsBlocked(null)
+                if (on) testNotification('done', "You'll be told when an agent finishes in the background.")
               }}
             />
           }
         />
-        {osBlocked && (
-          <div className="mt-2 flex items-center gap-3 text-[13px] text-[color:var(--caution)]">
-            macOS is blocking notifications for this app.
-            <Button onClick={() => void window.nodeTerminal.openNotificationSettings()}>
-              Open System Settings
-            </Button>
-          </div>
-        )}
+        {osBlockedNote('done')}
+      </SearchableRow>
+      <SearchableRow {...ROWS.needsYou}>
+        <FieldRow
+          label="Notify when an agent needs you"
+          description="An approval or a question is waiting on you — sent while nodeterm is in the background."
+          control={
+            <Switch
+              checked={notifyOnNeedsYou}
+              ariaLabel="Notify when an agent needs you"
+              onChange={(on) => {
+                update({ notifyOnNeedsYou: on, notifyConsentAsked: true })
+                setOsBlocked(null)
+                if (on) testNotification('needsYou', "You'll be told when an agent needs you in the background.")
+              }}
+            />
+          }
+        />
+        {/* Sub-gate of the needs-you toggle: inert (dimmed, non-interactive) while it is off. */}
+        <div
+          className={
+            'mt-3 space-y-3 border-l border-border pl-4' +
+            (notifyOnNeedsYou ? '' : ' pointer-events-none opacity-40')
+          }
+          aria-disabled={!notifyOnNeedsYou}
+        >
+          <FieldRow
+            label="Also while nodeterm is in front"
+            description="Notify even when nodeterm is the focused window, unless it's the terminal you're in."
+            control={
+              <Switch
+                checked={notifyWhileFocused}
+                ariaLabel="Notify about agents that need you while nodeterm is in front"
+                onChange={(on) => update({ notifyWhileFocused: on })}
+              />
+            }
+          />
+        </div>
+        {osBlockedNote('needsYou')}
+      </SearchableRow>
+      <SearchableRow {...ROWS.dockBadge}>
+        <DockBadgeRow />
       </SearchableRow>
       <SearchableRow {...ROWS.sound}>
         <FieldRow

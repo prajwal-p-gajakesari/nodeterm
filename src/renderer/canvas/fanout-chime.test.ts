@@ -3,10 +3,11 @@
 //
 // Canvas.tsx is a ~12k-line monolith and this listener lives inside one of its `useEffect`s — there
 // is no harness that can dispatch an `agent:status` event at it (see the note at the top of
-// `agent-status-rescue.test.ts`, which pins its sibling invariant the same way). The DECISION is
-// pure and behaviourally tested in `renderer/lib/completionAlert.test.ts`; what only the source can
-// show is that Canvas asks it, asks it for the right event, and puts the quiet gate BELOW the
-// unread write rather than above it.
+// `agent-status-rescue.test.ts`, which pins its sibling invariant the same way). The DECISIONS are
+// pure and behaviourally tested — "still working?" in `renderer/lib/completionAlert.test.ts`, and
+// what a quiet alert silences (the interrupts, never the unread record) in
+// `renderer/lib/agentAlert.test.ts`; what only the source can show is that Canvas asks them, for
+// the right event, and applies the answer.
 
 import { describe, it, expect } from 'vitest'
 import fs from 'fs'
@@ -43,24 +44,19 @@ describe('Canvas completion alert — background fan-out (issue #708)', () => {
     }
   })
 
-  it('silences the chime and the OS notification but NOT the unread record', () => {
+  it('hands the quiet verdict to the shared decision, which keeps the unread record', () => {
+    // The ORDER that used to be pinned here (unread + ack above the quiet return, both interrupts
+    // below it) is now `decideAgentAlert`'s, and is behaviour-tested in lib/agentAlert.test.ts
+    // ("quiet silences the chime and the notification but keeps the unread record"). What only
+    // the source can show is that the closure asks it, with the quiet flag, and applies the
+    // record half from its answer rather than from a gate of its own.
     const body = alertBody()
-    const unread = body.indexOf('cs.markUnread(e.nodeId)')
-    const ack = body.indexOf('ackDone(e.nodeId)')
-    const quiet = body.indexOf('opts?.quiet')
-    const sound = body.indexOf('playSfx(')
-    const notify = body.indexOf('nodeTerminal.notify(')
-    expect(unread).toBeGreaterThan(-1)
-    expect(ack).toBeGreaterThan(-1)
-    expect(quiet).toBeGreaterThan(-1)
-    expect(sound).toBeGreaterThan(-1)
-    expect(notify).toBeGreaterThan(-1)
-    // Unread + its ack are ABOVE the quiet return; both interrupts are below it.
-    expect(unread).toBeLessThan(quiet)
-    expect(ack).toBeLessThan(quiet)
-    expect(quiet).toBeLessThan(sound)
-    expect(quiet).toBeLessThan(notify)
-    // And the gate is a hard return, so nothing after it can leak through.
-    expect(body).toMatch(/if \(opts\?\.quiet\) return/)
+    expect(body).toMatch(/decideAgentAlert\(\{/)
+    expect(body).toMatch(/quiet: opts\?\.quiet,/)
+    expect(body).toMatch(/if \(d\.markUnread\) cs\.markUnread\(e\.nodeId\)/)
+    expect(body).toMatch(/if \(d\.ackDone\) void window\.nodeTerminal\.ackDone\(e\.nodeId\)/)
+    // No interrupt may bypass the decision.
+    expect(body).toMatch(/if \(d\.sound\) \{/)
+    expect(body).toMatch(/if \(d\.notify\) \{/)
   })
 })
