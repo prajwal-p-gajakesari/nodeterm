@@ -816,7 +816,14 @@ REALPATHS before acting, because the hand-made version of the same feature makes
 one and linking into it would plant links in the folder you are about to clean up. Verify the
 removal against a real filesystem with real symlinks and real content — a mocked `fs` agrees with
 whatever the code believed. And a launch-time sweep may re-create, never delete: ownership inferred
-from shape cannot tell your link from an identical one the user made by hand.
+from shape cannot tell your link from an identical one the user made by hand. Two more rules came
+with "Share ~/.claude setup" (`core/claude-setup-share-core.ts`), where a link replaces a file rather
+than joining a folder of siblings. Where a hand-made link of your exact shape is a NORMAL thing to
+find (the two-profile `settings.json` → `~/.claude/settings.json`), shape is not ownership: record
+what you created, outside the folder you linked into, before you create it. And an item with one
+slot means ON must set the existing copy ASIDE and OFF must put it back: into an empty slot only,
+never by a rename onto something already there, and from the explicit switch only, never from the
+sweep.
 
 **Do not take scrolling away from tmux.** It owns the mouse, the scrollback and the alternate
 screen. A previous design moved that into the emulator and failed structurally; `CLAUDE.md` explains

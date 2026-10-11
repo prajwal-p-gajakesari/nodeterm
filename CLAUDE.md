@@ -5380,6 +5380,75 @@ bridges enter live state only via `appendBridgeEdges`) and the server
       The switch is DISABLED with that reason (never hidden), and core refuses (`remote-account`) as
       the backstop for a hand-edited settings.json. **Mobile: N/A** — the phone never mints an
       account and carries no skills concept.
+  - **Shared ~/.claude setup (`shareSystemSetup`, OFF by default)** — the sibling switch for the
+    rest of what a user sets up once in `~/.claude`, which a managed account's config dir otherwise
+    replaces wholesale: `settings.json` (hooks, permissions, env, status line, `enabledPlugins`) with
+    the installed `plugins/`, `CLAUDE.md`, `agents/`, `commands/`, `output-styles/`. Pure plan in
+    `core/claude-setup-share-core.ts`, synchronous applier in `core/claude-setup-share.ts`, channels
+    `claude-accounts:set-setup-sharing` and `:setup-sharing-status` (core, so the Server Edition's
+    ws-bridge leg is a real passthrough), Settings → Accounts row beside the skills switch.
+    - **Links, not `claude --settings`.** `claude --help` (2.1.288) says `--settings` loads
+      ADDITIONAL settings; Claude Code's documented hierarchy applies those at command-line (flag)
+      scope, above user, project and local (documentation, not measured here), so the user's global
+      file would override a project's own settings — the opposite of the system account. It covers
+      only (no flag shares CLAUDE.md, agents, commands, output styles), and every launch site would
+      have to thread it. A link gives the account exactly the system account's view.
+    - **MEASURED (2.1.288, fabricated `HOME` + `CLAUDE_CONFIG_DIR`, no login):** `plugin
+      marketplace add`, `plugin install`, `plugin disable` and `plugin enable`, each run with the
+      account as `CLAUDE_CONFIG_DIR`, wrote THROUGH a symlinked `settings.json` (the link survived
+      every one). `installed_plugins.json` records the install path
+      through the account dir, but `plugin list --json` from the system dir re-roots it under the
+      system's own `plugins/cache` and still resolved after the account's link was removed. User-scope
+      MCP servers (`claude mcp add -s user`) live in `<configDir>/.claude.json` — never shared, so an
+      account does not see them (the copy says so). NOT measured (no login): Claude Code loading
+      CLAUDE.md / agents / commands / output styles through a link, and its other settings writers
+      (`/config`, `/permissions`) keeping the link.
+    - **Ownership needs a RECORD as well as the shape** — unlike the skills switch. An item is ours
+      iff `<userData>/claude-setup-share.json` lists it for that account id AND directory (realpath)
+      AND it is a link to exactly `join(~/.claude, <its own name>)`. Shape alone would claim the
+      two-profile layout this file documents under Linked accounts (`<dir>/settings.json` → the
+      system one), and the off-switch would delete the user's link. The record is written BEFORE a
+      link is made (a link without its record would never be removed); its reader admits only
+      allowlisted names.
+    - **One slot per item, so an explicit ON sets the account's own copy ASIDE** into
+      `<configDir>/.nodeterm-set-aside/<name>` (every managed account already has a real
+      `settings.json` — the managed hook — so "skip occupied" would make the switch a no-op). Never
+      onto an existing set-aside copy (a POSIX rename replaces), and OFF restores only into an EMPTY
+      slot. Nothing is deleted. The set-aside folder must be a real folder or everything is refused.
+    - **Only the switch moves or removes.** The launch sweep (`agent-integrations.ts` reconcile)
+      replays a stored `true` by linking EMPTY slots and nothing else, and it runs BEFORE the
+      managed-hook install in the same pass — synchronously, which is why this applier is sync:
+      otherwise the installer creates a real `settings.json` in an empty slot first and the account
+      silently stops sharing at every boot (`agent-integrations.test.ts` reds on the swapped order).
+      Linked, the install writes THROUGH into `~/.claude/settings.json`, which already carries the
+      same managed hook and `tui` key whenever claude is enabled; the installer drops its own entry
+      per event before adding one, so nothing is duplicated (#558's class) — and a decline removes
+      it through the link, exactly as it does from the system file.
+    - **Diverged** = recorded, but a regular file (or another link) now sits in the slot — an
+      editor or program replaced our link. Never overwritten in either direction; the status read
+      the Settings row makes on open SAYS it, on the row and outside the folded options, with the
+      tested remedy (copy changes into `~/.claude`, delete the file, switch off and on).
+    - **Identity guard.** `settings.json` — and `plugins`, which only means anything with the
+      `enabledPlugins` beside it — is withheld while `~/.claude/settings.json` sets a key that would
+      replace or redirect the account's own login: `apiKeyHelper`, `aws*`/`gcpAuthRefresh`,
+      `forceLogin*`, or an `env` entry from `AUTH_ENV_STRIP` / the Anthropic half of
+      `MODEL_GATEWAY_ENV_KEYS` / the Bedrock-Vertex-Foundry switches / `CLAUDE_CONFIG_DIR`. Shared
+      through the file, those would bring back inside Claude Code what the spawn strips. Names only,
+      never values; an unreadable file is withheld, never assumed safe. A key that appears AFTER
+      the link is reported loudly on the row; the sweep does not remove (only the switch removes).
+    - **Allowlist + a forbidden set that outranks it** (`NEVER_SHARED`: `.claude.json`,
+      `.credentials.json`, `projects`, `skills` — the other switch's — and the set-aside folder),
+      filtered by `setupItems()` and walked by the test with a name pattern too.
+    - **Windows:** a folder is a junction (no privilege, as for skills); `settings.json` and
+      `CLAUDE.md` are `'file'` symlinks, which need Developer Mode — an EPERM is reported on the item
+      and the account's own copy is put straight back. Never a hardlink: the settings transaction
+      publishes by rename to the realpath and would cut it on the first hook write.
+    - **Surfaces** as for skills: Desktop full; **Server Edition full** (shares the server
+      machine's `~/.claude`; with `installHooks: false` the launch sweep does not run, the switch
+      still does); **SSH accounts out of scope for v1**, switch DISABLED with the reason and core
+      refusing `remote-account`; **Mobile N/A**. Removing a managed account (`fs.rm` recursive)
+      deletes its links and its set-aside copies, never what the links point at (tested); unlinking
+      a LINKED account leaves both in the user's folder, so switch it off first.
   - **Account-aware readers** — transcript resolution is scoped per account (`transcriptRootFor`
     picks the account dir's `projects/`, composite cache key includes `accountId`); the same
     threading runs through the session-name poll, restart handoff, and `ChatPanel` (the ⌘M
