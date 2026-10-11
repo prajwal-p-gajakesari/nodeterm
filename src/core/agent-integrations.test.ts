@@ -4,7 +4,7 @@
 // did not enable, a decline removes exactly what nodeterm wrote (a file they edited is kept and
 // reported), and every agent that has canvas control / context link still discovers them.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'fs'
 import os from 'os'
 import path from 'path'
 import { initPlatform, resetPlatformForTests } from './platform'
@@ -220,6 +220,29 @@ describe('shared ~/.claude setup — the launch sweep', () => {
       managed += ours.length
     }
     expect(managed).toBeGreaterThan(0)
+  })
+
+  it('with $CLAUDE_CONFIG_DIR set, shares THAT dir — the file the system install writes — and never ~/.claude', () => {
+    const main = path.join(home, 'claude-main')
+    process.env.CLAUDE_CONFIG_DIR = main // restored by afterEach
+    put(path.join(main, 'settings.json'), JSON.stringify(USER_HOOK))
+    const dir = accountConfigDir(userData, 'acc-1')
+    mkdirSync(dir, { recursive: true })
+    const accounts = [{ id: 'acc-1', label: 'a', createdAt: 0, shareSystemSetup: true }] as ClaudeAccount[]
+    registerClaudeAccountsSource(() => accounts)
+    const { lc } = lifecycle(() => withAgents({ claude: 'enabled' }, { claudeAccounts: accounts }), { realHooks: true })
+    lc.reconcile()
+    expect(realpathSync(path.join(dir, 'settings.json'))).toBe(realpathSync(path.join(main, 'settings.json')))
+    // The account's hook install wrote through into the SAME file the system install wrote — once
+    // per event — so nothing reached a ~/.claude the system account does not even read.
+    expect(existsSync(path.join(home, '.claude'))).toBe(false)
+    const sys = JSON.parse(read(path.join(main, 'settings.json'))) as {
+      hooks: Record<string, { hooks?: { command: string }[] }[]>
+    }
+    for (const [event, defs] of Object.entries(sys.hooks)) {
+      const ours = defs.flatMap((d) => d.hooks ?? []).filter((h) => h.command.includes('agent-hooks'))
+      expect(ours.length, event).toBeLessThanOrEqual(1)
+    }
   })
 
   it('without the flag the account keeps a settings.json of its own', () => {

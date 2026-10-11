@@ -10,6 +10,7 @@ import {
   SET_ASIDE_DIR,
   SHARED_SETUP_ITEMS,
   classifySetupItem,
+  describeSetupShare,
   identityKeysIn,
   planSetupShare,
   sanitizeRecorded,
@@ -117,6 +118,32 @@ describe('identityKeysIn — keys that would replace or redirect the account log
     expect(JSON.stringify(found)).not.toContain('sk-secret')
   })
 
+  it('covers the provider switches, credential variables and mTLS by EXACT name — not a prefix', () => {
+    const raw = JSON.stringify({
+      forceLoginGatewayUrl: 'https://gw',
+      env: {
+        CLAUDE_CODE_USE_MANTLE: '1',
+        CLAUDE_CODE_USE_ANTHROPIC_AWS: '1',
+        ANTHROPIC_CUSTOM_HEADERS: 'Authorization: x',
+        AWS_BEARER_TOKEN_BEDROCK: 'x',
+        CLAUDE_CODE_CLIENT_KEY: '/k.pem',
+        ANTHROPIC_WORKSPACE_ID: 'w',
+        // Same prefix, unrelated meaning: must NOT count.
+        CLAUDE_CODE_USE_POWERSHELL_TOOL: '1',
+        CLAUDE_CODE_USE_NATIVE_FILE_SEARCH: '1'
+      }
+    })
+    expect(identityKeysIn(raw)).toEqual([
+      'forceLoginGatewayUrl',
+      'env.CLAUDE_CODE_USE_ANTHROPIC_AWS',
+      'env.CLAUDE_CODE_USE_MANTLE',
+      'env.ANTHROPIC_CUSTOM_HEADERS',
+      'env.AWS_BEARER_TOKEN_BEDROCK',
+      'env.ANTHROPIC_WORKSPACE_ID',
+      'env.CLAUDE_CODE_CLIENT_KEY'
+    ])
+  })
+
   it('an ordinary setup — hooks, permissions, plugins, status line — has none', () => {
     const raw = JSON.stringify({
       hooks: { Notification: [{ hooks: [{ type: 'command', command: 'flowboard push' }] }] },
@@ -190,6 +217,39 @@ describe('planSetupShare — ON from the switch', () => {
   })
 })
 
+describe('planSetupShare — plugins rides with settings.json', () => {
+  const pluginsOf = (f: SetupShareFacts, gesture: 'toggle' | 'sweep' = 'toggle') => {
+    const plan = planSetupShare(f, { enabled: true, gesture })
+    return { steps: stepsOf(plan, 'plugins'), skip: skipOf(plan, 'plugins'), plan }
+  }
+
+  it('is linked, and tied to settings.json, when settings.json will be shared', () => {
+    const { steps, plan } = pluginsOf(facts())
+    expect(steps).toEqual(['link'])
+    expect(plan.items.find((i) => i.name === 'plugins')?.requires).toBe('settings.json')
+  })
+
+  it('is linked when settings.json is already the user’s own link to the system copy', () => {
+    const f = facts({ account: { 'settings.json': ourLink('settings.json') } })
+    expect(pluginsOf(f).steps).toEqual(['link'])
+  })
+
+  it('is NOT linked when settings.json stays the account’s own — diverged, occupied set-aside, or the sweep', () => {
+    const diverged = facts({ recorded: ['settings.json'], setAside: { 'settings.json': true }, setAsideDir: 'dir' })
+    const occupied = facts({ setAside: { 'settings.json': true }, setAsideDir: 'dir' })
+    for (const [label, f, gesture] of [
+      ['diverged', diverged, 'toggle'],
+      ['set-aside-occupied', occupied, 'toggle'],
+      ['sweep keeps own', facts(), 'sweep']
+    ] as const) {
+      const r = pluginsOf(f, gesture)
+      expect(r.steps, label).toBeUndefined()
+      expect(r.skip, label).toBe('needs-settings')
+      expect(r.plan.recordAfter, label).not.toContain('plugins')
+    }
+  })
+})
+
 describe('planSetupShare — the identity guard', () => {
   it('withholds settings.json AND plugins while ~/.claude/settings.json would replace or redirect the login', () => {
     const plan = planSetupShare(facts({ settingsIdentity: ['apiKeyHelper'] }), {
@@ -209,6 +269,40 @@ describe('planSetupShare — the identity guard', () => {
     const plan = planSetupShare(facts({ settingsIdentity: 'unreadable' }), { enabled: true, gesture: 'toggle' })
     expect(skipOf(plan, 'settings.json')).toBe('withheld-unreadable')
     expect(stepsOf(plan, 'plugins')).toBeUndefined()
+  })
+
+  it('WITHDRAWS our settings.json and plugins links on any ON pass — the launch sweep included', () => {
+    const account: SetupShareFacts['account'] = {}
+    for (const name of ALL) account[name] = ourLink(name)
+    for (const gesture of ['sweep', 'toggle'] as const) {
+      for (const settingsIdentity of [['apiKeyHelper'], 'unreadable'] as const) {
+        const plan = planSetupShare(
+          facts({
+            account,
+            recorded: ALL,
+            setAside: { 'settings.json': true },
+            setAsideDir: 'dir',
+            settingsIdentity: settingsIdentity as SetupShareFacts['settingsIdentity']
+          }),
+          { enabled: true, gesture }
+        )
+        const label = `${gesture} ${String(settingsIdentity)}`
+        expect(stepsOf(plan, 'settings.json'), label).toEqual(['unlink', 'restore'])
+        expect(stepsOf(plan, 'plugins'), label).toEqual(['unlink'])
+        expect(skipOf(plan, 'settings.json'), label).toBe('withdrawn-identity')
+        expect(plan.recordAfter, label).toEqual(['CLAUDE.md', 'agents', 'commands', 'output-styles'])
+        // Nothing else is touched: the guard is about the login, and only these two carry it.
+        expect(plan.items.map((i) => i.name), label).toEqual(['settings.json', 'plugins'])
+      }
+    }
+  })
+
+  it('never withdraws the user’s own link, even with a guarded key', () => {
+    const plan = planSetupShare(
+      facts({ account: { 'settings.json': ourLink('settings.json') }, recorded: [], settingsIdentity: ['apiKeyHelper'] }),
+      { enabled: true, gesture: 'sweep' }
+    )
+    expect(stepsOf(plan, 'settings.json')).toBeUndefined()
   })
 
   it('does not share plugins without a settings.json to enable them', () => {
@@ -261,6 +355,22 @@ describe('planSetupShare — OFF', () => {
   })
 })
 
+describe('describeSetupShare — what could still be shared', () => {
+  it('marks an item available only when the system has it and the guards allow it', () => {
+    const f = facts({ settingsIdentity: ['apiKeyHelper'] })
+    f.system['CLAUDE.md'] = { kind: 'absent' }
+    const avail = Object.fromEntries(describeSetupShare(f).map((i) => [i.name, i.available]))
+    expect(avail).toEqual({
+      'settings.json': false,
+      plugins: false,
+      'CLAUDE.md': false,
+      agents: true,
+      commands: true,
+      'output-styles': true
+    })
+  })
+})
+
 describe('ownership needs the record, not just the shape', () => {
   // The documented two-profile layout: `~/.claude-2/settings.json` is the user's own symlink to
   // `~/.claude/settings.json` — exactly the shape we create. #643's shape-only rule would call it
@@ -280,10 +390,24 @@ describe('ownership needs the record, not just the shape', () => {
   it('a link we recorded but that now points elsewhere is not ours', () => {
     const f = facts({
       account: { agents: { kind: 'link', linkTarget: '/elsewhere/agents', real: '/elsewhere/agents' } },
-      recorded: ['agents']
+      recorded: ['agents'],
+      setAside: { agents: true },
+      setAsideDir: 'dir'
     })
     expect(classifySetupItem(f, 'agents')).toBe('diverged')
     expect(stepsOf(planSetupShare(f, { enabled: false, gesture: 'toggle' }), 'agents')).toBeUndefined()
+  })
+
+  it('a recorded name holding a regular file with NO set-aside copy is the account’s own', () => {
+    // Exactly what a crash between the record write and the set-aside rename leaves. Calling it
+    // diverged would advise deleting the account's only copy; as `own`, ON sets it aside instead.
+    const f = facts({ recorded: ['settings.json'] })
+    expect(classifySetupItem(f, 'settings.json')).toBe('own')
+    expect(stepsOf(planSetupShare(f, { enabled: true, gesture: 'toggle' }), 'settings.json')).toEqual([
+      'set-aside',
+      'link'
+    ])
+    expect(stepsOf(planSetupShare(f, { enabled: false, gesture: 'toggle' }), 'settings.json')).toBeUndefined()
   })
 })
 

@@ -283,7 +283,9 @@ export function registerClaudeAccountsIpc(deps: ClaudeAccountsDeps = {}): void {
   /**
    * "Share ~/.claude setup" for one LOCAL account: the switch's effect (`gesture: 'toggle'`, the
    * only caller allowed to set the account's own copies aside or, when off, to remove links and put
-   * them back) and the read-only status the Settings row shows on open. The renderer owns the flag.
+   * them back — the launch sweep's identity withdrawal aside) and the read-only status the Settings
+   * row shows on open, which also hands out that withdrawal's one-time notice. The renderer owns
+   * the flag.
    *
    * Same two gates as the skills switch, for the same reasons: a REMOTE account is refused (its
    * config dir is on its host — linking this machine's setup into a local path the session never

@@ -11,6 +11,7 @@ import {
   readFileSync,
   readdirSync,
   readlinkSync,
+  realpathSync as realpathSyncForTest,
   renameSync as renameSyncForTest,
   rmSync,
   symlinkSync,
@@ -305,8 +306,12 @@ describe('failures put things back', () => {
     expect(stateOf(res, 'settings.json')).toMatchObject({ state: 'own', setAside: false, error: 'EPERM' })
     expect(read(path.join(cfg, 'settings.json'))).toBe(ACCOUNT_SETTINGS)
     expect(stateOf(res, 'CLAUDE.md')).toMatchObject({ state: 'none', error: 'EPERM' })
-    expect(isLink(path.join(cfg, 'agents'))).toBe(true) // folders are junctions: unaffected
-    expect(recorded()).toEqual(['plugins', 'agents', 'commands', 'output-styles'])
+    // plugins is a junction and WOULD link — but settings.json just failed, so the account keeps its
+    // own enabledPlugins and must not get the global plugins dir under them.
+    expect(existsSync(path.join(cfg, 'plugins'))).toBe(false)
+    expect(stateOf(res, 'plugins')).toMatchObject({ state: 'none', skipped: 'needs-settings' })
+    expect(isLink(path.join(cfg, 'agents'))).toBe(true) // the rest are junctions: unaffected
+    expect(recorded()).toEqual(['agents', 'commands', 'output-styles'])
   })
 
   it('never sets aside onto a copy that appeared there mid-run — a rename would replace it', () => {
@@ -341,6 +346,109 @@ describe('failures put things back', () => {
     expect(stateOf(res, 'settings.json')).toMatchObject({ state: 'own', error: 'EBUSY' })
     expect(read(path.join(cfg, 'settings.json'))).toBe(ACCOUNT_SETTINGS)
     expect(recorded()).not.toContain('settings.json')
+  })
+})
+
+describe('the identity guard’s withdrawal', () => {
+  const addHelper = (): void =>
+    put(path.join(sys, 'settings.json'), JSON.stringify({ ...JSON.parse(SYSTEM_SETTINGS), apiKeyHelper: '/bin/key' }))
+
+  it('the launch sweep unlinks our settings.json + plugins, restores the account’s own, and says so ONCE', () => {
+    on()
+    const before = snapshot(sys)
+    addHelper() // edited after sharing — Claude Code hot-reloads it, so the account already uses it
+    const res = on('sweep')
+    expect(stateOf(res, 'settings.json')).toMatchObject({ state: 'own', skipped: 'withdrawn-identity' })
+    expect(isLink(path.join(cfg, 'settings.json'))).toBe(false)
+    expect(read(path.join(cfg, 'settings.json'))).toBe(ACCOUNT_SETTINGS)
+    expect(existsSync(path.join(cfg, 'plugins'))).toBe(false)
+    expect(existsSync(path.join(cfg, SET_ASIDE_DIR, 'settings.json'))).toBe(false)
+    // Only those two: the rest stays shared, and nothing in the system dir moved.
+    expect(isLink(path.join(cfg, 'agents'))).toBe(true)
+    expect(recorded()).toEqual(['CLAUDE.md', 'agents', 'commands', 'output-styles'])
+    const { ['settings.json']: _settings, ...rest } = snapshot(sys)
+    const { ['settings.json']: _before, ...restBefore } = before
+    expect(rest).toEqual(restBefore)
+    // Announced to the first status read, and to that one only.
+    expect(status().withdrawnAtLaunch).toBe(true)
+    expect(status().withdrawnAtLaunch).toBeUndefined()
+  })
+
+  it('an ON from the switch withdraws the same two, without a launch notice (the switch is its own)', () => {
+    on()
+    addHelper()
+    const res = on('toggle')
+    expect(stateOf(res, 'settings.json')?.skipped).toBe('withdrawn-identity')
+    expect(read(path.join(cfg, 'settings.json'))).toBe(ACCOUNT_SETTINGS)
+    expect(existsSync(path.join(cfg, 'plugins'))).toBe(false)
+    expect(status().withdrawnAtLaunch).toBeUndefined()
+  })
+
+  it('once the key is gone, switching off and on shares them again', () => {
+    on()
+    addHelper()
+    on('sweep')
+    put(path.join(sys, 'settings.json'), SYSTEM_SETTINGS)
+    off()
+    const res = on()
+    expect(stateOf(res, 'settings.json')?.state).toBe('shared')
+    expect(stateOf(res, 'plugins')?.state).toBe('shared')
+  })
+})
+
+describe('the ownership record', () => {
+  it('an unreadable record aborts — nothing is linked and the file is not overwritten', () => {
+    put(recordFile, '{ "version": 1, "accounts": { "other": { "dir": "/x", "links": ["agents"] } ')
+    const bytes = read(recordFile)
+    const res = on()
+    expect(res.error).toBe('record-unreadable')
+    expect(read(recordFile)).toBe(bytes)
+    expect(isLink(path.join(cfg, 'agents'))).toBe(false)
+    expect(read(path.join(cfg, 'settings.json'))).toBe(ACCOUNT_SETTINGS)
+    expect(status().error).toBe('record-unreadable')
+  })
+
+  it('so does a record path that cannot be read at all (a folder there)', () => {
+    mkdirSync(recordFile, { recursive: true })
+    expect(on().error).toBe('record-unreadable')
+    expect(isLink(path.join(cfg, 'agents'))).toBe(false)
+  })
+
+  it('only a MISSING record reads as empty', () => {
+    expect(existsSync(recordFile)).toBe(false)
+    expect(on().error).toBeUndefined()
+  })
+
+  it('a crash between the record write and the set-aside leaves the account’s own copy, read as its own', () => {
+    put(recordFile, JSON.stringify({ version: 1, accounts: { a1: { dir: realpathSyncForTest(cfg), links: ['settings.json'] } } }))
+    expect(stateOf(status(), 'settings.json')?.state).toBe('own')
+    // …and the switch then does what it would have: set it aside and link.
+    const res = on()
+    expect(stateOf(res, 'settings.json')).toMatchObject({ state: 'shared', setAside: true })
+    expect(read(path.join(cfg, SET_ASIDE_DIR, 'settings.json'))).toBe(ACCOUNT_SETTINGS)
+  })
+})
+
+describe('the source is the system Claude dir, $CLAUDE_CONFIG_DIR included', () => {
+  it('with no systemDir given, links point into $CLAUDE_CONFIG_DIR and the label names it', () => {
+    const moved = path.join(root, 'claude-main')
+    put(path.join(moved, 'agents', 'only-here.md'), 'MOVED')
+    const saved = { cfg: process.env.CLAUDE_CONFIG_DIR, home: process.env.HOME }
+    process.env.CLAUDE_CONFIG_DIR = moved
+    // A scratch HOME too: were the default ever `homedir()/.claude` again, this test must read an
+    // empty scratch dir and fail, never the developer's own ~/.claude.
+    process.env.HOME = path.join(root, 'scratch-home')
+    try {
+      const res = applySetupShare({ ...target, configDir: cfg, recordFile, enabled: true, gesture: 'toggle' })
+      expect(read(path.join(cfg, 'agents', 'only-here.md'))).toBe('MOVED')
+      expect(res.systemLabel).toBe(moved)
+      expect(isLink(path.join(cfg, 'CLAUDE.md'))).toBe(false) // ~/.claude's would-be items are not touched
+    } finally {
+      if (saved.cfg === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = saved.cfg
+      if (saved.home === undefined) delete process.env.HOME
+      else process.env.HOME = saved.home
+    }
   })
 })
 

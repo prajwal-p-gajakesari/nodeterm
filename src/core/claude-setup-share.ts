@@ -44,8 +44,10 @@ import { renameAtomicSync } from './fs-atomic'
 import { writeManagedHookFileAtomic } from './agents/hooks/install-helper'
 import { platform } from './platform'
 import { normalizeLinkPath } from './claude-skill-share-core'
+import { claudeSystemConfigDir } from './agents/hooks/claude'
 import {
   SET_ASIDE_DIR,
+  classifySetupItem,
   describeSetupShare,
   identityKeysIn,
   isOurSetupLink,
@@ -60,11 +62,22 @@ import {
   type SetupSystemEntry
 } from './claude-setup-share-core'
 
-/** The machine's `~/.claude` — the same root the sibling skills switch shares from, and what the
- *  Settings copy names. */
-export function systemClaudeDir(): string {
-  return path.join(homedir(), '.claude')
+/** How the source dir is named in a sentence: `~/.claude` when it is that, else its path. The
+ *  source is `claudeSystemConfigDir()` — `$CLAUDE_CONFIG_DIR` when the app's environment sets it,
+ *  which is the dir the system account (and nodeterm's own system hook install) actually uses. */
+function systemLabelFor(dir: string, win: boolean): string {
+  return normalizeLinkPath(dir, win) === normalizeLinkPath(path.join(homedir(), '.claude'), win)
+    ? '~/.claude'
+    : dir
 }
+
+/**
+ * Withdrawals the launch sweep made in THIS process run, by account id → the key names that caused
+ * them. The sweep runs at boot, before any window exists, so a broadcast would reach nobody; the
+ * renderer asks once settings have loaded (`announceSetupShareWithdrawals`), and the first status
+ * read for that account TAKES the entry, so the notice is raised once per withdrawal, not per read.
+ */
+const withdrawnAtLaunch = new Set<string>()
 
 /** The ownership record, in nodeterm's OWN userData: which items nodeterm linked into which
  *  account dir. Not inside the account dir, which for a linked account is the user's folder. */
@@ -78,8 +91,9 @@ export interface SetupShareOps {
 export interface SetupShareTarget {
   accountId: string
   configDir: string
-  /** `~/.claude`. Injected by every test: this module CREATES LINKS AND MOVES FILES, and a suite
-   *  run against a real home directory would be one bug away from editing it. */
+  /** The shared source; defaults to `claudeSystemConfigDir()`. Injected by the tests: this module
+   *  CREATES LINKS AND MOVES FILES, and a suite run against a real home directory would be one bug
+   *  away from editing it. */
   systemDir?: string
   /** The record file; defaults to `<userData>/claude-setup-share.json`. */
   recordFile?: string
@@ -139,16 +153,30 @@ function readAccount(dir: string, name: string): SetupAccountEntry {
   return { kind: st.isFile() ? 'file' : st.isDirectory() ? 'dir' : 'other', real: realOrSelf(p) }
 }
 
+/**
+ * Only a MISSING record is an empty one. Any other failure — unparseable JSON, EACCES, EBUSY, a
+ * folder at the path — THROWS, so the caller reports it and writes nothing: the record holds every
+ * account's links, and publishing "empty" over a file we merely could not read would turn every
+ * other account's links into "shared-by-you" ones the off-switch can no longer remove.
+ */
 function readRecordFile(file: string): SetupShareRecordFile {
+  let raw: string
   try {
-    return sanitizeSetupShareRecord(JSON.parse(readFileSync(file, 'utf8')))
+    raw = readFileSync(file, 'utf8')
+  } catch (e) {
+    if (codeOf(e) === 'ENOENT') return { version: 1, accounts: {} }
+    throw Object.assign(new Error(`cannot read ${file}`), { code: 'record-unreadable' })
+  }
+  try {
+    return sanitizeSetupShareRecord(JSON.parse(raw))
   } catch {
-    return { version: 1, accounts: {} }
+    throw Object.assign(new Error(`cannot parse ${file}`), { code: 'record-unreadable' })
   }
 }
 
 interface ReadState {
   facts: SetupShareFacts
+  systemLabel: string
   configDir: string
   setAsidePath: string
   recordFile: string
@@ -157,7 +185,8 @@ interface ReadState {
 
 function readState(t: SetupShareTarget): ReadState {
   const win = t.win ?? process.platform === 'win32'
-  const sysReal = realOrSelf(t.systemDir ?? systemClaudeDir())
+  const systemDir = t.systemDir ?? claudeSystemConfigDir()
+  const sysReal = realOrSelf(systemDir)
   const cfgReal = realOrSelf(t.configDir)
   const setAsidePath = path.join(t.configDir, SET_ASIDE_DIR)
   const recordFile = t.recordFile ?? path.join(platform().userDataDir, SETUP_SHARE_RECORD_FILE)
@@ -214,6 +243,7 @@ function readState(t: SetupShareTarget): ReadState {
       recorded,
       win
     },
+    systemLabel: systemLabelFor(systemDir, win),
     configDir: t.configDir,
     setAsidePath,
     recordFile,
@@ -245,6 +275,7 @@ function report(s: ReadState, notes: ItemNotes = {}): ClaudeSetupShareResult {
     items: describeSetupShare(s.facts).map((item) => ({ ...item, ...notes[item.name] })),
     identityKeys: Array.isArray(id) ? id : [],
     ...(id === 'unreadable' ? { settingsUnreadable: true } : {}),
+    systemLabel: s.systemLabel,
     configDir: s.configDir,
     setAsideDir: s.setAsidePath
   }
@@ -255,7 +286,9 @@ export function readSetupShareStatus(t: SetupShareTarget): ClaudeSetupShareResul
   try {
     const s = readState(t)
     const refused = setupShareRefusal(s.facts)
-    return refused ? { ...report(s), refused } : report(s)
+    const withdrawn = withdrawnAtLaunch.delete(t.accountId)
+    const res = refused ? { ...report(s), refused } : report(s)
+    return withdrawn ? { ...res, withdrawnAtLaunch: true } : res
   } catch (e) {
     console.warn('[setup-share] status failed', t.configDir, e)
     return { items: [], identityKeys: [], setAsideDir: '', error: codeOf(e) }
@@ -297,7 +330,8 @@ function removeLink(p: string): void {
 /**
  * Reconcile one account's shared setup to `enabled`. Never throws. `gesture` is who is asking:
  * `'toggle'` (the Settings switch — may set aside and, when OFF, remove and restore) or `'sweep'`
- * (the launch pass replaying a stored `true` — links empty slots and nothing else).
+ * (the launch pass replaying a stored `true` — links empty slots, and otherwise only makes the
+ * identity guard's withdrawal; see the planner's rule 4).
  */
 export function applySetupShare(
   t: SetupShareTarget & {
@@ -326,12 +360,21 @@ export function applySetupShare(
 
     // RECORD FIRST: a link that exists without its record is a link the off-switch will never
     // remove (rule 1 needs both), so the names about to be linked are written down before any link
-    // is made. The opposite crash — a recorded name with no link — is harmless: nothing to remove.
+    // is made. The opposite crash — a name recorded but never linked — removes nothing either: with
+    // no link of ours in the slot, the classifier reads the slot as the account's own copy (or as
+    // `diverged` only when a set-aside copy proves we moved one), and the next read drops the name.
     const before = new Set<ClaudeSetupItemName>(sanitizeRecorded(s.facts.recorded))
     const union = new Set<ClaudeSetupItemName>([...before, ...plan.recordAfter])
     if (t.enabled) writeRecord(s.recordFile, t.accountId, s.facts.configDir, orderOf(union))
 
     for (const item of plan.items) {
+      // plugins rides with settings.json: when settings.json failed in this run (a Windows file
+      // link without Developer Mode, a rename that failed), linking plugins would leave the account
+      // on the global plugins with its OWN enabledPlugins.
+      if (item.requires && extra[item.requires]?.error) {
+        extra[item.name] = { skipped: 'needs-settings' }
+        continue
+      }
       const p = path.join(s.configDir, item.name)
       const aside = path.join(s.setAsidePath, item.name)
       let setAsideDone = false
@@ -371,15 +414,17 @@ export function applySetupShare(
       }
     }
 
-    // READ AGAIN and keep exactly the names that are now ours — plus, while ON, a name recorded
-    // BEFORE this run that still has something in its slot (diverged), so the row keeps saying so.
-    // `before`, not `union`: a name written down for this run whose link then failed has the
-    // account's own copy back in its slot, and keeping it would misreport that copy as diverged.
+    // READ AGAIN and keep exactly the names that are now ours — plus, while ON, a name that reads
+    // `diverged` against the record as it stood BEFORE this run, so the row keeps saying so. Not
+    // against `union`: a name written down for this run whose link then failed has the account's
+    // own copy back in its slot, and keeping it would misreport that copy; nor "anything still in
+    // the slot", which would keep a withdrawn settings.json recorded over the restored own copy.
     const after = readState(t)
+    const asBefore = { ...after.facts, recorded: [...before] }
     const keep = setupItems().map((i) => i.name).filter(
       (n) =>
         isOurSetupLink(n, after.facts.account[n], after.facts.systemDir, union, after.win) ||
-        (t.enabled && before.has(n) && after.facts.account[n]?.kind !== 'absent')
+        (t.enabled && classifySetupItem(asBefore, n) === 'diverged')
     )
     writeRecord(s.recordFile, t.accountId, s.facts.configDir, keep)
     if (!t.enabled) {
@@ -388,6 +433,13 @@ export function applySetupShare(
       } catch {
         /* not empty, or never existed */
       }
+    }
+    // The sweep's withdrawal is the one removal nobody asked for at that moment, so it is kept for
+    // the renderer to announce (see `withdrawnAtLaunch`). A switch flip is its own announcement.
+    if (t.gesture === 'sweep' && extra['settings.json']?.skipped === 'withdrawn-identity' && !extra['settings.json'].error) {
+      withdrawnAtLaunch.add(t.accountId)
+    } else if (t.gesture === 'toggle') {
+      withdrawnAtLaunch.delete(t.accountId)
     }
     return report({ ...after, facts: { ...after.facts, recorded: keep } }, extra)
   } catch (e) {

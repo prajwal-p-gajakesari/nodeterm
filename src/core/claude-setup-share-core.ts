@@ -39,10 +39,14 @@
 //     at add time). So an explicit ON SETS ASIDE the account's own copy into
 //     `<cfg>/.nodeterm-set-aside/<name>` (never over an existing one) and OFF puts it back — only
 //     into an empty slot. Nothing is ever deleted.
-//  3. Only the switch moves or removes anything. The launch sweep only links EMPTY slots.
+//  3. Only the switch moves or removes anything — with ONE exception, rule 4's withdrawal. The
+//     launch sweep otherwise only links EMPTY slots.
 //  4. `settings.json` is withheld while the system copy carries a key that would replace or
-//     redirect this account's own login (see IDENTITY_*); `plugins` rides with it, because `enabledPlugins` lives
-//     in settings.json and the two are only meaningful together.
+//     redirect this account's own login (see IDENTITY_*), and an existing link of ours is
+//     WITHDRAWN by any ON pass that finds one — the launch sweep included, because Claude Code
+//     hot-reloads settings and the account is already using the key. `plugins` rides with
+//     settings.json in both directions: it is linked only where settings.json ends up shared,
+//     because `enabledPlugins` lives there and the two are only meaningful together.
 import path from 'path'
 import { AUTH_ENV_STRIP, isSafeAccountId } from './claude-accounts-core'
 import { MODEL_GATEWAY_ENV_KEYS } from '../shared/agents/model-gateway'
@@ -92,9 +96,11 @@ export const NEVER_SHARED: Readonly<Record<string, string>> = {
 
 /**
  * Top-level settings.json keys that make Claude Code authenticate through something other than the
- * account's own login, redirect it, or refuse it. Key NAMES are matched; a value is never read past "is it set",
- * never logged and never sent to the renderer. That these names exist in 2.1.288 is measured (the
- * binary's strings); what each one does is Claude Code's documentation, not our measurement.
+ * account's own login, redirect it, or refuse it. EXACT names, not prefixes — a prefix would also
+ * catch unrelated keys, and the docs name exactly these. Key NAMES are matched; a value is never
+ * read past "is it set", never logged and never sent to the renderer. Every name below is present
+ * in the 2.1.288 binary's strings (measured); what each one does is Claude Code's documentation,
+ * not our measurement.
  */
 export const IDENTITY_SETTINGS_KEYS = [
   'apiKeyHelper',
@@ -102,24 +108,49 @@ export const IDENTITY_SETTINGS_KEYS = [
   'awsCredentialExport',
   'gcpAuthRefresh',
   'forceLoginMethod',
-  'forceLoginOrgUUID'
+  'forceLoginOrgUUID',
+  'forceLoginGatewayUrl'
 ] as const
 
 /**
- * `env` entries with the same effect. Built from the lists that already exist for this exact hazard
- * — `AUTH_ENV_STRIP` is what nodeterm deletes from a managed account's pane at spawn so a stray key
- * cannot shadow the account, and the Anthropic half of `MODEL_GATEWAY_ENV_KEYS` redirects it — so a
- * settings.json `env` block cannot bring back through Claude Code what the spawn took out. Plus the
- * provider switches (the session would run on the user's cloud credentials) and the config-dir
- * variable itself.
+ * `env` entries with the same effect, as EXACT names. Built on the lists that already exist for this
+ * hazard — `AUTH_ENV_STRIP` is what nodeterm deletes from a managed account's pane at spawn so a
+ * stray key cannot shadow the account, and the Anthropic half of `MODEL_GATEWAY_ENV_KEYS` redirects
+ * it — so a settings.json `env` block cannot bring back through Claude Code what the spawn took out.
+ * Then: the provider switches (the session would run on other credentials) — never a
+ * `CLAUDE_CODE_USE_*` prefix, which would also catch `CLAUDE_CODE_USE_POWERSHELL_TOOL` and
+ * `CLAUDE_CODE_USE_NATIVE_FILE_SEARCH`; the other credential and identity variables; the mTLS client
+ * certificate; and the config-dir variable itself. All present in the 2.1.288 binary's strings;
+ * `CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD` and `CLAUDE_CODE_USE_GATEWAY` were FOUND there rather
+ * than in the docs, so their effect is inferred from the name (a false positive only withholds).
  */
 export const IDENTITY_ENV_KEYS: readonly string[] = [
   ...new Set<string>([
     ...AUTH_ENV_STRIP,
     ...MODEL_GATEWAY_ENV_KEYS.filter((k) => k.startsWith('ANTHROPIC_')),
+    // Provider switches.
     'CLAUDE_CODE_USE_BEDROCK',
     'CLAUDE_CODE_USE_VERTEX',
     'CLAUDE_CODE_USE_FOUNDRY',
+    'CLAUDE_CODE_USE_ANTHROPIC_AWS',
+    'CLAUDE_CODE_USE_MANTLE',
+    'CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD',
+    'CLAUDE_CODE_USE_GATEWAY',
+    // Other credentials and identity.
+    'ANTHROPIC_CUSTOM_HEADERS',
+    'ANTHROPIC_AWS_API_KEY',
+    'ANTHROPIC_FOUNDRY_API_KEY',
+    'ANTHROPIC_FOUNDRY_AUTH_TOKEN',
+    'AWS_BEARER_TOKEN_BEDROCK',
+    'CLAUDE_CODE_OAUTH_REFRESH_TOKEN',
+    'ANTHROPIC_PROFILE',
+    'ANTHROPIC_FEDERATION_RULE_ID',
+    'ANTHROPIC_ORGANIZATION_ID',
+    'ANTHROPIC_WORKSPACE_ID',
+    // mTLS client certificate.
+    'CLAUDE_CODE_CLIENT_CERT',
+    'CLAUDE_CODE_CLIENT_KEY',
+    'CLAUDE_CODE_CLIENT_KEY_PASSPHRASE',
     'CLAUDE_CONFIG_DIR'
   ])
 ]
@@ -206,6 +237,8 @@ export interface SetupItemPlan {
   /** In order. The applier stops an item at its first failure, and a failed `link` after a
    *  successful `set-aside` puts the account's copy back (the one rollback). */
   steps: SetupStep[]
+  /** Skip this item if the named one failed earlier in the same run (plugins → settings.json). */
+  requires?: 'settings.json'
 }
 
 export interface SetupSharePlan {
@@ -278,19 +311,24 @@ export function classifySetupItem(
   if (acc.real && sys?.real && normalizeLinkPath(acc.real, win) === normalizeLinkPath(sys.real, win)) {
     return 'shared-by-you'
   }
-  // We linked it, and something else sits there now — Claude Code or an editor replaced the link
-  // with a regular file, or the user swapped it. Never overwritten; reported until resolved.
-  if (recorded.has(name)) return 'diverged'
+  // We linked it, set the account's own copy aside, and something else sits there now — Claude Code
+  // or an editor replaced the link with a regular file, or the user swapped it. Never overwritten;
+  // reported until resolved. WITHOUT a set-aside copy a recorded name holding a regular file is the
+  // account's own: that is exactly the state a crash between the record write and the set-aside
+  // rename leaves, and calling it diverged would advise deleting the account's only copy.
+  if (recorded.has(name) && facts.setAside[name]) return 'diverged'
   return 'own'
 }
 
 /** The per-item status, for a read with no write (the Settings row on open) and for the re-read
- *  after an apply. */
+ *  after an apply. `available`: the system has this item and the guards would let it be linked —
+ *  so an `own` item that is available, with the switch on, is one the person can still share. */
 export function describeSetupShare(facts: SetupShareFacts): ClaudeSetupShareItem[] {
-  return setupItems().map(({ name }) => ({
-    name,
-    state: classifySetupItem(facts, name),
-    setAside: !!facts.setAside[name]
+  return setupItems().map((item) => ({
+    name: item.name,
+    state: classifySetupItem(facts, item.name),
+    setAside: !!facts.setAside[item.name],
+    available: systemShareable(facts, item).ok
   }))
 }
 
@@ -315,9 +353,11 @@ export function setupShareRefusal(
  * Decide what to do. Never touches the filesystem, never throws.
  *
  * `gesture: 'toggle'` is the person flipping the switch — the only caller allowed to set an item
- * aside (move the account's own copy) or, with `enabled: false`, to remove anything. `'sweep'` is
- * the launch pass replaying a stored `true`: it links EMPTY slots and does nothing else, because a
- * background pass that moves files is a second, unannounced owner of the account's directory.
+ * aside (move the account's own copy) or, with `enabled: false`, to remove at will. `'sweep'` is
+ * the launch pass replaying a stored `true`: it links EMPTY slots and otherwise makes only rule 4's
+ * identity withdrawal, because a background pass that moves files is a second, unannounced owner of
+ * the account's directory — the withdrawal is the one case where NOT acting is the worse outcome,
+ * and it is announced (`withdrawnAtLaunch`).
  */
 export function planSetupShare(
   facts: SetupShareFacts,
@@ -331,6 +371,10 @@ export function planSetupShare(
   // A recorded name ON leaves untouched (diverged, dangling) STAYS recorded, so the row keeps saying
   // so until it is resolved; OFF drops every name, and the applier keeps one only if its unlink failed.
   const after = new Set<ClaudeSetupItemName>(sanitizeRecorded(facts.recorded))
+  // settings.json's answer, for the plugins decision after it (the table lists settings.json first;
+  // were that ever reordered, plugins would read `false` here and simply not be linked).
+  let settingsEndsShared = false
+  let settingsWithdrawn = false
 
   for (const item of setupItems()) {
     const target = setupLinkTarget(facts.systemDir, item.name, win)
@@ -350,7 +394,29 @@ export function planSetupShare(
       continue
     }
 
-    if (state === 'shared' || state === 'dangling' || state === 'shared-by-you') continue
+    // IDENTITY WITHDRAWAL — the one removal an ON pass makes, the launch sweep included. A key that
+    // would replace or redirect this account's login (or a file that cannot be read to prove it does
+    // not) appeared in the shared settings.json after it was linked; Claude Code hot-reloads
+    // settings, so the account is ALREADY using it. Fail closed: unlink OUR link (rule 1, re-checked
+    // by the applier) and put the account's own copy back. Only ever settings.json and the plugins
+    // that ride with it, and only links the record proves are ours — a hand-made link is the user's.
+    const identityBlocked = facts.settingsIdentity === 'unreadable' || facts.settingsIdentity.length > 0
+    const ours = state === 'shared' || state === 'dangling'
+    if (
+      ours &&
+      ((item.name === 'settings.json' && identityBlocked) ||
+        (item.name === 'plugins' && settingsWithdrawn))
+    ) {
+      if (item.name === 'settings.json') settingsWithdrawn = true
+      push(setAside ? ['unlink', 'restore'] : ['unlink'])
+      after.delete(item.name)
+      plan.skipped.push({ name: item.name, reason: 'withdrawn-identity' })
+      continue
+    }
+    if (state === 'shared' || state === 'dangling' || state === 'shared-by-you') {
+      if (item.name === 'settings.json' && state !== 'dangling') settingsEndsShared = true
+      continue
+    }
     if (state === 'diverged') {
       plan.skipped.push({ name: item.name, reason: 'diverged' })
       continue
@@ -360,11 +426,23 @@ export function planSetupShare(
       if (share.withheld) plan.skipped.push({ name: item.name, reason: share.withheld })
       continue
     }
+    // `plugins` only where settings.json ENDS UP shared (ours, or the user's own link to it): the
+    // `enabledPlugins` that make an installed plugin mean anything live there. Otherwise a plugin
+    // installed or enabled from the account would land in the GLOBAL installed_plugins.json while its
+    // `enabledPlugins` entry landed in the account's own settings.json. Decided on the plan's own
+    // answer for settings.json, which the table puts first; the applier also skips this link when
+    // settings.json then fails in the same run (a Windows file link without Developer Mode).
+    if (item.name === 'plugins' && !settingsEndsShared) {
+      plan.skipped.push({ name: item.name, reason: 'needs-settings' })
+      continue
+    }
+    const requires = item.name === 'plugins' ? { requires: 'settings.json' as const } : {}
     if (state === 'none') {
       // An empty slot — a fresh share, or one whose copy was already set aside earlier. The sweep
       // may do this one: it moves nothing.
-      push(['link'])
+      plan.items.push({ name: item.name, kind: item.kind, target, steps: ['link'], ...requires })
       after.add(item.name)
+      if (item.name === 'settings.json') settingsEndsShared = true
       continue
     }
     // `own`: the account has its own copy in the slot.
@@ -382,8 +460,9 @@ export function planSetupShare(
       plan.skipped.push({ name: item.name, reason: 'set-aside-occupied' })
       continue
     }
-    push(['set-aside', 'link'])
+    plan.items.push({ name: item.name, kind: item.kind, target, steps: ['set-aside', 'link'], ...requires })
     after.add(item.name)
+    if (item.name === 'settings.json') settingsEndsShared = true
   }
   // Table order, so the file it is written to is stable.
   plan.recordAfter = setupItems().map((i) => i.name).filter((n) => after.has(n))
