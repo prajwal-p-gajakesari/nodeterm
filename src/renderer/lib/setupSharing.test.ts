@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { setupShareView } from './setupSharing'
+import { announceSetupShareWithdrawals, setupShareView } from './setupSharing'
 import type {
+  ClaudeAccount,
   ClaudeSetupItemName,
   ClaudeSetupShareItem,
   ClaudeSetupShareResult
@@ -54,16 +55,57 @@ describe('setupShareView — ON', () => {
     ])
   })
 
-  it('says loudly when a key appeared after settings.json was already shared', () => {
+  it('a key that appeared after settings.json was shared: says the account reads it now, and when it is unlinked', () => {
     const v = setupShareView(res(allShared(), { identityKeys: ['apiKeyHelper'] }), true)
-    expect(v.warnings[0]).toContain('now sets apiKeyHelper, which can replace or redirect this account’s own login')
-    expect(v.warnings[0]).toContain('Turn this off')
+    expect(v.warnings).toEqual([
+      '~/.claude/settings.json now sets apiKeyHelper, which would replace or redirect this account’s own login — Claude Code already reads it in this account. nodeterm unlinks settings.json and plugins at its next launch; turn this off and on to do it now.'
+    ])
+  })
+
+  it('a withdrawal — at launch or from the switch — says what was unlinked, why, and how to share again', () => {
+    const items = { 'settings.json': { state: 'own' as const, skipped: 'withdrawn-identity' as const } }
+    const fromSwitch = setupShareView(res(items, { identityKeys: ['env.ANTHROPIC_API_KEY'] }), true)
+    expect(fromSwitch.warnings).toEqual([
+      'settings.json and plugins were unlinked: ~/.claude/settings.json sets env.ANTHROPIC_API_KEY, which would replace or redirect this account’s own login. This account’s own settings are back. Once that file is safe again, turn this off and on to share them.'
+    ])
+    const atLaunch = setupShareView(
+      res({ 'settings.json': { state: 'own' } }, { identityKeys: ['apiKeyHelper'], withdrawnAtLaunch: true }),
+      true
+    )
+    expect(atLaunch.warnings[0]).toContain('were unlinked at launch:')
+    // The withdrawal sentence REPLACES the plain "not shared" one rather than adding to it.
+    expect(atLaunch.warnings).toHaveLength(1)
+  })
+
+  it('names the source by its label when $CLAUDE_CONFIG_DIR moved it, in that dir’s own separator', () => {
+    const posix = setupShareView(res({}, { systemLabel: '/home/u/claude-main', identityKeys: ['apiKeyHelper'] }), true)
+    expect(posix.warnings[0]).toContain('/home/u/claude-main/settings.json sets apiKeyHelper')
+    expect(posix.summary).toBe('Nothing in /home/u/claude-main to share yet.')
+    const win = setupShareView(res({}, { systemLabel: 'C:\\Users\\me\\claude-main', identityKeys: ['apiKeyHelper'] }), true)
+    expect(win.warnings[0]).toContain('C:\\Users\\me\\claude-main\\settings.json sets')
+  })
+
+  it('plugins waiting on settings.json says why', () => {
+    const v = setupShareView(res({ plugins: { state: 'none', skipped: 'needs-settings' } }), true)
+    expect(v.warnings).toEqual([
+      'plugins is not shared because settings.json is not — the enabledPlugins that make an installed plugin count are kept there.'
+    ])
+  })
+
+  it('a shareable item the account still holds its own copy of is said, with the switch-off-and-on remedy', () => {
+    const v = setupShareView(
+      res({ agents: { state: 'shared' }, 'CLAUDE.md': { state: 'own', available: true }, commands: { state: 'own', available: false } }),
+      true
+    )
+    expect(v.warnings).toEqual([
+      'CLAUDE.md is not shared: this account has its own copy. Turn this off and on again to share it (the copy is set aside, not deleted).'
+    ])
   })
 
   it('an unreadable ~/.claude/settings.json is said, not read as "nothing to share"', () => {
     const v = setupShareView(res({}, { settingsUnreadable: true }), true)
     expect(v.warnings).toEqual([
-      'settings.json and plugins are not shared: ~/.claude/settings.json could not be read as JSON.'
+      'settings.json and plugins are not shared: ~/.claude/settings.json could not be read as JSON, so it cannot be checked for keys that would replace this account’s login.'
     ])
   })
 
@@ -114,6 +156,13 @@ describe('setupShareView — OFF', () => {
 })
 
 describe('setupShareView — refusals and failures', () => {
+  it('an unreadable ownership record says nothing was changed, and where the record lives', () => {
+    const v = setupShareView({ items: [], identityKeys: [], setAsideDir: '', error: 'record-unreadable' }, true)
+    expect(v.warnings).toEqual([
+      'nodeterm could not read its record of shared links (claude-setup-share.json in its data folder), so nothing was changed.'
+    ])
+  })
+
   it('a failed read is never "nothing to share"', () => {
     const v = setupShareView({ items: [], identityKeys: [], setAsideDir: '', error: 'EACCES' }, true)
     expect(v.summary).toBeNull()
@@ -126,5 +175,43 @@ describe('setupShareView — refusals and failures', () => {
     expect(setupShareView(res({}, { refused: 'set-aside-unavailable' }), true).warnings[0]).toContain(
       '.nodeterm-set-aside is not a folder'
     )
+  })
+})
+
+describe('announceSetupShareWithdrawals — the launch notice', () => {
+  const acct = (over: Partial<ClaudeAccount>): ClaudeAccount => ({ id: 'a1', label: 'work', createdAt: 0, ...over })
+
+  it('raises one toast per account the launch sweep withdrew, and asks only local accounts with the switch on', async () => {
+    const asked: string[] = []
+    const notes: string[] = []
+    await announceSetupShareWithdrawals(
+      [
+        acct({ id: 'a1', label: 'work', shareSystemSetup: true }),
+        acct({ id: 'a2', label: 'calm', shareSystemSetup: true }),
+        acct({ id: 'a3', label: 'off' }),
+        acct({ id: 'a4', label: 'remote', host: 'u@h', shareSystemSetup: true })
+      ],
+      async (id) => {
+        asked.push(id)
+        return res({}, id === 'a1' ? { withdrawnAtLaunch: true, identityKeys: ['apiKeyHelper'] } : {})
+      },
+      (m) => notes.push(m)
+    )
+    expect(asked).toEqual(['a1', 'a2'])
+    expect(notes).toEqual([
+      'Stopped sharing settings.json and plugins with “work”: ~/.claude/settings.json sets apiKeyHelper, which would replace or redirect that account’s own login. See Settings → Accounts.'
+    ])
+  })
+
+  it('a surface without the method, or a failed read, raises nothing', async () => {
+    const notes: string[] = []
+    await announceSetupShareWithdrawals(
+      [acct({ shareSystemSetup: true })],
+      async () => {
+        throw Object.assign(new Error('nope'), { code: 'E_UNSUPPORTED' })
+      },
+      (m) => notes.push(m)
+    )
+    expect(notes).toEqual([])
   })
 })

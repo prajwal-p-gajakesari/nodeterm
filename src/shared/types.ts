@@ -3555,6 +3555,11 @@ export type ClaudeSetupItemState = 'shared' | 'dangling' | 'shared-by-you' | 'di
 export type ClaudeSetupSkip =
   | 'withheld-identity'
   | 'withheld-unreadable'
+  /** Our settings.json (and plugins) link was REMOVED because the shared file now carries a key
+   *  that would replace or redirect the account's login; the account's own copy is back. */
+  | 'withdrawn-identity'
+  /** plugins is not linked because settings.json is not shared (enabledPlugins lives there). */
+  | 'needs-settings'
   | 'set-aside-occupied'
   | 'own-kept'
   | 'diverged'
@@ -3565,6 +3570,8 @@ export interface ClaudeSetupShareItem {
   state: ClaudeSetupItemState
   /** The account's own copy sits in the set-aside folder (put back when sharing is turned off). */
   setAside: boolean
+  /** The system dir has this item and the guards would let it be linked. */
+  available?: boolean
   skipped?: ClaudeSetupSkip
   /** errno-style code of a step that failed on this item in this call (e.g. `EPERM`). */
   error?: string
@@ -3576,10 +3583,17 @@ export interface ClaudeSetupShareResult {
   /** Keys `~/.claude/settings.json` sets that would replace or redirect the account's login —
    *  NAMES only (`apiKeyHelper`, `env.ANTHROPIC_API_KEY`), never values. While any is set,
    *  settings.json and plugins are not linked; if one appears after they were, the account is using
-   *  it and the row says so. */
+   *  it (settings hot-reload) and the row says so, and the next ON pass — the launch sweep included —
+   *  unlinks them (`withdrawn-identity`). */
   identityKeys: string[]
   /** `~/.claude/settings.json` exists but is not a JSON object, so it cannot be checked. */
   settingsUnreadable?: boolean
+  /** How to name the shared source dir in a sentence: `~/.claude`, or the absolute path when
+   *  `$CLAUDE_CONFIG_DIR` moved the system Claude dir elsewhere. */
+  systemLabel?: string
+  /** The launch sweep withdrew this account's shared settings.json (and plugins) during this app run
+   *  — the identity guard's one automatic removal. Reported ONCE: the first status read takes it. */
+  withdrawnAtLaunch?: boolean
   /** The account's config dir and its set-aside folder, on this machine — named in the sentences
    *  that ask the person to do something there (a managed account's path is otherwise unknown). */
   configDir?: string

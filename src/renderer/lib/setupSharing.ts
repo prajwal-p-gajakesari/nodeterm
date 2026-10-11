@@ -7,6 +7,7 @@
 // replaced with a regular file (`diverged`) or a ~/.claude/settings.json that now replaces this
 // account's login are both silent otherwise: the switch still says "on".
 import type {
+  ClaudeAccount,
   ClaudeSetupItemName,
   ClaudeSetupShareItem,
   ClaudeSetupShareResult
@@ -43,8 +44,31 @@ function errorSentence(item: ClaudeSetupShareItem, enabled: boolean): string {
   return `${item.name} could not be ${enabled ? 'linked' : 'unlinked'} (${code}).`
 }
 
+/** `<src>/settings.json` in the source's own dialect: a Windows `$CLAUDE_CONFIG_DIR` (`C:\…`)
+ *  gets a backslash, everything else (including `~/.claude`) a slash. Display only. */
+function settingsIn(src: string): string {
+  return src.includes('\\') && !src.includes('/') ? `${src}\\settings.json` : `${src}/settings.json`
+}
+
+/** Why settings.json cannot be shared, as the tail of a sentence about `<src>/settings.json`. */
+function blockedReason(res: ClaudeSetupShareResult, who = 'this account’s'): string {
+  return res.identityKeys.length > 0
+    ? `sets ${list(res.identityKeys)}, which would replace or redirect ${who} own login`
+    : `could not be read as JSON, so it cannot be checked for keys that would replace ${who} login`
+}
+
 export function setupShareView(res: ClaudeSetupShareResult, enabled: boolean): SetupShareView {
   const warnings: string[] = []
+  // The shared source: `~/.claude`, or the dir `$CLAUDE_CONFIG_DIR` moved it to.
+  const src = res.systemLabel ?? '~/.claude'
+  if (res.error === 'record-unreadable') {
+    return {
+      summary: null,
+      warnings: [
+        'nodeterm could not read its record of shared links (claude-setup-share.json in its data folder), so nothing was changed.'
+      ]
+    }
+  }
   if (res.error) {
     // An empty `items` here is "could not look", never "nothing to share".
     return { summary: null, warnings: [`Setup sharing could not be checked (${res.error}).`] }
@@ -54,7 +78,7 @@ export function setupShareView(res: ClaudeSetupShareResult, enabled: boolean): S
   }
   if (res.refused === 'same-directory') {
     return {
-      summary: 'This account’s folder is ~/.claude itself (or inside it), so there is nothing to share.',
+      summary: `This account’s folder is ${src} itself (or inside it), so there is nothing to share.`,
       warnings
     }
   }
@@ -72,34 +96,55 @@ export function setupShareView(res: ClaudeSetupShareResult, enabled: boolean): S
   const diverged = by((i) => i.state === 'diverged')
   const dangling = by((i) => i.state === 'dangling')
   const settings = res.items.find((i) => i.name === 'settings.json')
-  const keys = list(res.identityKeys)
+  const plugins = res.items.find((i) => i.name === 'plugins')
+  const identityBlocked = res.identityKeys.length > 0 || !!res.settingsUnreadable
 
   for (const item of res.items) if (item.error) warnings.push(errorSentence(item, enabled))
 
   if (enabled) {
-    if (res.identityKeys.length > 0 && settings?.state === 'shared') {
+    if (res.withdrawnAtLaunch || settings?.skipped === 'withdrawn-identity') {
+      // The identity guard's one automatic removal (launch sweep, or an ON pass from the switch).
       warnings.push(
-        `~/.claude/settings.json now sets ${keys}, which can replace or redirect this account’s own login. Turn this off to give it its own settings back.`
+        `settings.json and plugins were unlinked${res.withdrawnAtLaunch ? ' at launch' : ''}: ${settingsIn(src)} ${blockedReason(res)}. This account’s own settings are back. Once that file is safe again, turn this off and on to share them.`
       )
-    } else if (res.identityKeys.length > 0) {
+    } else if (identityBlocked && settings?.state === 'shared') {
+      // Between a hot-reloaded edit of the shared file and the next ON pass.
       warnings.push(
-        `settings.json and plugins are not shared: ~/.claude/settings.json sets ${keys}, which would replace or redirect this account’s own login.`
+        `${settingsIn(src)} now ${blockedReason(res)} — Claude Code already reads it in this account. nodeterm unlinks settings.json and plugins at its next launch; turn this off and on to do it now.`
       )
-    } else if (res.settingsUnreadable && settings?.state !== 'shared') {
+    } else if (identityBlocked) {
+      warnings.push(`settings.json and plugins are not shared: ${settingsIn(src)} ${blockedReason(res)}.`)
+    }
+    if (plugins?.skipped === 'needs-settings') {
       warnings.push(
-        'settings.json and plugins are not shared: ~/.claude/settings.json could not be read as JSON.'
+        'plugins is not shared because settings.json is not — the enabledPlugins that make an installed plugin count are kept there.'
       )
     }
     if (diverged.length) {
       warnings.push(
         `${list(diverged)} ${isAre(diverged)} no longer shared — ${
           diverged.length === 1 ? 'it was' : 'they were'
-        } replaced by a regular file in ${res.configDir ?? 'this account’s folder'}. Copy any change you want to keep into ~/.claude, delete ${itThem(diverged)} there, then turn this off and on again.`
+        } replaced by a regular file in ${res.configDir ?? 'this account’s folder'}. Copy any change you want to keep into ${src}, delete ${itThem(diverged)} there, then turn this off and on again.`
       )
     }
     if (dangling.length) {
       warnings.push(
-        `${list(dangling)} ${isAre(dangling)} linked, but ~/.claude no longer has ${itThem(dangling)}.`
+        `${list(dangling)} ${isAre(dangling)} linked, but ${src} no longer has ${itThem(dangling)}.`
+      )
+    }
+    // Shareable, but the account still holds its own copy: the launch sweep never moves one aside
+    // (an item that appeared in the source after the switch went on, a crash before the move).
+    const ownButShareable = by(
+      (i) =>
+        i.state === 'own' &&
+        !!i.available &&
+        !i.error &&
+        i.skipped !== 'set-aside-occupied' &&
+        i.skipped !== 'withdrawn-identity'
+    )
+    if (ownButShareable.length) {
+      warnings.push(
+        `${list(ownButShareable)} ${isAre(ownButShareable)} not shared: this account has its own copy. Turn this off and on again to share ${itThem(ownButShareable)} (the copy is set aside, not deleted).`
       )
     }
     for (const item of res.items) {
@@ -112,9 +157,9 @@ export function setupShareView(res: ClaudeSetupShareResult, enabled: boolean): S
 
     const parts: string[] = []
     if (shared.length) parts.push(`Sharing ${list(shared)}.`)
-    else if (!byYou.length) parts.push('Nothing in ~/.claude to share yet.')
+    else if (!byYou.length) parts.push(`Nothing in ${src} to share yet.`)
     if (byYou.length) {
-      parts.push(`${list(byYou)} already ${byYou.length === 1 ? 'points' : 'point'} at ~/.claude on ${byYou.length === 1 ? 'its' : 'their'} own.`)
+      parts.push(`${list(byYou)} already ${byYou.length === 1 ? 'points' : 'point'} at ${src} on ${byYou.length === 1 ? 'its' : 'their'} own.`)
     }
     const aside = by((i) => i.setAside && i.state === 'shared')
     if (aside.length) {
@@ -127,7 +172,7 @@ export function setupShareView(res: ClaudeSetupShareResult, enabled: boolean): S
   const stillLinked = [...shared, ...dangling]
   if (stillLinked.length) {
     warnings.push(
-      `${list(stillLinked)} ${isAre(stillLinked)} still linked to ~/.claude. Turn this on and off again to remove ${itThem(stillLinked)}.`
+      `${list(stillLinked)} ${isAre(stillLinked)} still linked to ${src}. Turn this on and off again to remove ${itThem(stillLinked)}.`
     )
   }
   const notBack = by((i) => i.setAside && i.state !== 'shared' && i.state !== 'dangling')
@@ -139,4 +184,33 @@ export function setupShareView(res: ClaudeSetupShareResult, enabled: boolean): S
     )
   }
   return { summary: null, warnings }
+}
+
+/**
+ * Once settings have loaded, raise the launch sweep's withdrawals as a toast. The sweep runs in
+ * core at boot, before any window exists, so this is the first moment anyone can be told — and the
+ * notice matters because the switch still reads "on" afterwards. Core hands each withdrawal out
+ * once (the first status read takes it), so a later Settings open does not repeat it. A surface
+ * without the method (a relay tab) or a failed read simply raises nothing.
+ */
+export async function announceSetupShareWithdrawals(
+  accounts: readonly ClaudeAccount[],
+  status: (id: string) => Promise<ClaudeSetupShareResult>,
+  notify: (message: string) => void
+): Promise<void> {
+  for (const a of accounts) {
+    if (a.host || !a.shareSystemSetup) continue
+    let res: ClaudeSetupShareResult
+    try {
+      res = await status(a.id)
+    } catch {
+      continue
+    }
+    if (!res.withdrawnAtLaunch) continue
+    notify(
+      `Stopped sharing settings.json and plugins with “${a.label || a.email || a.id}”: ${
+        settingsIn(res.systemLabel ?? '~/.claude')
+      } ${blockedReason(res, 'that account’s')}. See Settings → Accounts.`
+    )
+  }
 }

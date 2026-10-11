@@ -30,6 +30,7 @@ import {
 import { useGlassA11y } from './lib/useGlassA11y'
 import { GlassRefraction } from './components/GlassRefraction'
 import { isLiquidGlass } from './lib/appTheme'
+import { announceSetupShareWithdrawals } from './lib/setupSharing'
 
 export default function App() {
   // Apply the terminal-rendering setting to the two GPU coordinators, live. 'auto' is
@@ -171,6 +172,21 @@ export default function App() {
   useEffect(() => {
     if (settingsHydrated) window.nodeTerminal.setUiZoomFactor(resolveUiScale(uiScale))
   }, [uiScale, settingsHydrated])
+
+  // "Share ~/.claude setup": the launch sweep unlinks an account's shared settings.json (and plugins)
+  // when the shared file has gained a key that would replace or redirect that account's login — the
+  // one removal nobody asked for at that moment, made at boot before this window existed. Say so
+  // once settings are read; the switch itself still reads "on" afterwards. A toast of kind 'error'
+  // because that is the only kind Canvas renders.
+  useEffect(() => {
+    if (!settingsHydrated) return
+    void announceSetupShareWithdrawals(
+      useSettings.getState().settings.claudeAccounts,
+      (id) => window.nodeTerminal.claudeAccounts.setupSharingStatus(id),
+      (message) =>
+        window.dispatchEvent(new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message } }))
+    )
+  }, [settingsHydrated])
 
   // Keep the view-mode store's default in sync with the Settings choice, so projects the user
   // hasn't explicitly toggled follow it (and flip live when the setting changes).

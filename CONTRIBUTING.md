@@ -822,8 +822,10 @@ than joining a folder of siblings. Where a hand-made link of your exact shape is
 find (the two-profile `settings.json` → `~/.claude/settings.json`), shape is not ownership: record
 what you created, outside the folder you linked into, before you create it. And an item with one
 slot means ON must set the existing copy ASIDE and OFF must put it back: into an empty slot only,
-never by a rename onto something already there, and from the explicit switch only, never from the
-sweep.
+never by a rename onto something already there, and set aside by the explicit switch only, never by
+the sweep. If a sweep must ever REMOVE (that feature's identity withdrawal: a shared settings.json
+that gained a key replacing the account's login), it removes only what the record proves is yours,
+puts the user's copy back, and makes sure a person is told — a sweep runs before any window exists.
 
 **Do not take scrolling away from tmux.** It owns the mouse, the scrollback and the alternate
 screen. A previous design moved that into the emulator and failed structurally; `CLAUDE.md` explains
