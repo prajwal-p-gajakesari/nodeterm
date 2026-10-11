@@ -7400,10 +7400,14 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
     with the dialog open; a project switch during git leaves the orphan worktree and says so. The
     node is then selected and handed the keyboard through `useTerminalFocus` (latent until it
     mounts) — not `focusNodeById`, which needs it in `nodesRef` and on a miss selects nothing (it
-    looks for the id in other projects instead). Gate: everything that refuses New worktree… refuses this row too, with the same
+    looks for the id in other projects instead). The keyboard request is SKIPPED while a kanban
+    board covers the canvas (⌘K reaches the action from there, and the canvas stays mounted under
+    the board, so typing would land in a shell nobody can see) — `nodeToRefocus`'s `boardOpen`
+    rule; the user stays on the board, where the node is an ordinary session card. Gate: everything that refuses New worktree… refuses this row too, with the same
     reason (`worktreeRowGate`), **plus a shared (relay) tab** (`WORKTREE_AGENT_RELAY_HINT`): the
     agent is opened while `attachWorktree` holds the frame's setup gate, so its start is ALWAYS
-    held, and a relay tab cannot release a held start. This intent only creates; adopting an
+    held, and a relay tab cannot release a held start (the palette, with no disabled row, says so
+    through `WORKTREE_AGENT_RELAY_NOTICE`). This intent only creates; adopting an
     existing worktree stays with New worktree…. Surfaces: Desktop and Server Edition (renderer
     only, existing bridges); the kanban column "+" is not a consumer of the spec (the agent node is
     an ordinary session card); Mobile N/A like every worktree affordance.

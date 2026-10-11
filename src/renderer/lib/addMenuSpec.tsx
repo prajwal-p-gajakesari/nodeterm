@@ -163,8 +163,7 @@ export const WORKTREE_AGENT_LABEL = 'New agent in new worktree…'
  * Why that row is off in a shared (relay) tab. The agent is opened into the frame in the same tick
  * the frame is bound, while the frame's setup (shared paths, the project's setup script) is still
  * pending — so its start is always HELD on that setup, and a shared tab cannot release a held start
- * (the node only says to open the host). The issue card's "Start with agent in a new worktree" is
- * refused there on the same mechanism. Plain "New worktree…" holds nothing and stays available.
+ * (the node only says to open the host). Plain "New worktree…" holds nothing and stays available.
  */
 export const WORKTREE_AGENT_RELAY_HINT =
   'Not available in a shared tab — the agent’s start waits on the new worktree’s setup, which a shared tab cannot release'
