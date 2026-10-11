@@ -131,8 +131,10 @@ describe('Canvas wiring (source pins)', () => {
     expect(assign).toContain('!document.hasFocus()')
   })
 
-  it('the turn-end alert folds into a handoff ping just sent (and only the done sound)', () => {
-    expect(source()).toContain("if (sound === 'done' && suppressDoneAfterHandoff(e.nodeId, Date.now())) return")
+  it('the turn-end alert hands the fold to the shared decision', () => {
+    // "Only the done alert folds, and only when it would interrupt" is decideAgentAlert's, and is
+    // behaviour-tested in lib/agentAlert.test.ts; this pins that the closure hands the fold over.
+    expect(source()).toContain('handoffFolded: () => suppressDoneAfterHandoff(e.nodeId, now)')
   })
 
   it('the window focus reset is installed for the canvas lifetime', () => {
