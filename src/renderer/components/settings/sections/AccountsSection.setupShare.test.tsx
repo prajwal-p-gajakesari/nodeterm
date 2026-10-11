@@ -136,7 +136,18 @@ describe('AccountsSection — share ~/.claude setup', () => {
     )
     install()
     const { host, root } = await renderSection([{ ...local, shareSystemSetup: true }])
-    expect(unfoldedText(host)).toContain('now sets apiKeyHelper, which can replace or redirect this account’s own login')
+    expect(unfoldedText(host)).toContain('now sets apiKeyHelper, which would replace or redirect this account’s own login')
+    expect(unfoldedText(host)).toContain('nodeterm unlinks settings.json and plugins at its next launch')
+    act(() => root.unmount())
+  })
+
+  it('a withdrawal the launch sweep made is on the row, outside the folded options', async () => {
+    setupSharingStatus = vi.fn(async () =>
+      report({ 'settings.json': { state: 'own' } }, { identityKeys: ['apiKeyHelper'], withdrawnAtLaunch: true })
+    )
+    install()
+    const { host, root } = await renderSection([{ ...local, shareSystemSetup: true }])
+    expect(unfoldedText(host)).toContain('settings.json and plugins were unlinked at launch')
     act(() => root.unmount())
   })
 

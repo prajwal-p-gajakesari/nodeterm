@@ -470,7 +470,7 @@ function SetupSharingRow({
           title={
             remote
               ? undefined
-              : 'Links this machine’s ~/.claude settings.json (hooks, permissions, env, status line, enabled plugins), installed plugins, CLAUDE.md, agents, commands and output styles into the account. They are shared, not copied, so an edit from either side changes the same file. The account’s own copies are set aside and come back when you turn this off. Never shared: the login, user MCP servers (claude mcp add -s user) and conversations.'
+              : 'Links this machine’s Claude settings folder (~/.claude, or $CLAUDE_CONFIG_DIR when nodeterm was started with it) into the account: settings.json (hooks, permissions, env, status line, enabled plugins), installed plugins, CLAUDE.md, agents, commands and output styles. They are shared, not copied, so an edit from either side changes the same file. The account’s own copies are set aside and come back when you turn this off. settings.json and plugins are never shared while that settings.json would replace or redirect the account’s login. Never shared: the login, user MCP servers (claude mcp add -s user) and conversations.'
           }
         >
           Share ~/.claude setup
