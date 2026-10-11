@@ -3304,10 +3304,12 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   (default off): a needs-you for a node the user is not watching notifies while the window is
   focused — never for a finish (the chime covers that) and never for the watched node. The #708
   quiet gate and the handoff fold silence the chime and the notification only, never the unread
-  record; the fold is a callback because asking consumes it. **Every consent site** (first-run
-  dialog, the tour's step, the tour's skip) writes BOTH toggles through `notifyConsentPatch`: the
-  needs-you toggle ships ON, so a site that answered only the finish toggle would leave a user who
-  declined with needs-you banners (`canvas/agent-alert.wiring.test.ts`). Board handoff pings and
+  record; the fold is a callback because asking consumes it. **Every consent site** — the
+  first-run dialog, the tour's step, the tour's skip, and a Settings → Notifications switch flipped
+  while the question is still open (`notifyTogglePatch`; Settings opens over the tour) — writes BOTH
+  toggles through `notifyConsentPatch`: both ship ON, so a site that answered for one kind only
+  left the other on for someone who never pressed Enable, and the tour's skip, seeing the question
+  answered, no longer declined it (`canvas/agent-alert.wiring.test.ts`). Board handoff pings and
   live-link `control-taken` keep their own gates (finish toggle + consent; consent alone).
   Clicking a notification focuses the window and sends `app:focus-node` → `Canvas.focusNodeById`
   (selects + centers, switching projects via `pendingFocusRef` if needed). Selecting, focusing,
@@ -3323,7 +3325,9 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   0, which is what clears a badge already showing). A finished turn never counts as needs-you,
   seen or not: that is `'unread'`'s job. The sessions sidebar's "Waiting for your response" group
   does include `done` — it sorts by whose move it is, while the badge answers "how many agents are
-  stuck until I act". Canvas subscribes to the primitive `dockBadgeCount`, never to `byId`. Live
+  stuck until I act". Canvas subscribes to the primitive `dockBadgeCount`, never to `byId`, and
+  sends nothing until settings hydrate (before that the mode is the DEFAULT, and an 'off' user saw
+  the unread count flash at launch). Live
   `state` is not persisted, so `'needs-you'` reads 0 after a restart until each agent's next hook
   event. Main applies it on macOS only; the Server Edition bridge's `setBadgeCount` is a no-op, and
   the Settings row is disabled with its reason in a browser tab and off macOS. The mode is

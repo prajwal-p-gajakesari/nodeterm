@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_SETTINGS } from '@shared/types'
-import { ALERT_COOLDOWN_MS, decideAgentAlert, notifyConsentPatch, type AgentAlertInput } from './agentAlert'
+import {
+  ALERT_COOLDOWN_MS,
+  decideAgentAlert,
+  notifyConsentPatch,
+  notifyTogglePatch,
+  type AgentAlertInput
+} from './agentAlert'
 
 // A realistic clock: production passes Date.now(), so a fixture "now" near zero would hide a
 // cooldown that treats a missing stamp as "chimed at 0".
@@ -216,5 +222,26 @@ describe('notifyConsentPatch — one answer covers both kinds', () => {
     expect(after.notifyOnClaudeDone).toBe(false)
     expect(after.notifyOnNeedsYou).toBe(false)
     expect(after.notifyConsentAsked).toBe(true)
+  })
+})
+
+describe('notifyTogglePatch — a Settings switch', () => {
+  it('once consent is answered, writes only its own key', () => {
+    expect(notifyTogglePatch('notifyOnNeedsYou', false, true)).toEqual({ notifyOnNeedsYou: false })
+    expect(notifyTogglePatch('notifyOnClaudeDone', true, true)).toEqual({ notifyOnClaudeDone: true })
+  })
+
+  it('before consent, answers the question and declines the other kind instead of leaving it on', () => {
+    const after = (patch: object) => ({ ...DEFAULT_SETTINGS, ...patch })
+    expect(after(notifyTogglePatch('notifyOnNeedsYou', false, false))).toMatchObject({
+      notifyConsentAsked: true,
+      notifyOnNeedsYou: false,
+      notifyOnClaudeDone: false
+    })
+    expect(after(notifyTogglePatch('notifyOnClaudeDone', true, false))).toMatchObject({
+      notifyConsentAsked: true,
+      notifyOnClaudeDone: true,
+      notifyOnNeedsYou: false
+    })
   })
 })

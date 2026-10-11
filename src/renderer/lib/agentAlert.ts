@@ -113,10 +113,11 @@ export function decideAgentAlert(i: AgentAlertInput): AgentAlertDecision {
 }
 
 /**
- * The settings one consent answer writes. Every place that asks the one-time question — the
+ * The settings one consent answer writes. Every place that answers the one-time question — the
  * first-run dialog (recorded as declined before it opens; its Enable answers yes), the setup tour's
- * step, the tour's skip — answers BOTH notification kinds through this, so a user who declined
- * cannot be left with one of them on at its shipped default.
+ * step, the tour's skip, and a Settings switch flipped before any of those (`notifyTogglePatch`) —
+ * answers BOTH notification kinds through this, so a user who never said yes cannot be left with
+ * one of them on at its shipped default.
  */
 export function notifyConsentPatch(enable: boolean): {
   notifyConsentAsked: true
@@ -124,6 +125,21 @@ export function notifyConsentPatch(enable: boolean): {
   notifyOnNeedsYou: boolean
 } {
   return { notifyConsentAsked: true, notifyOnClaudeDone: enable, notifyOnNeedsYou: enable }
+}
+
+/**
+ * What one Settings → Notifications switch writes. Once the consent question is answered, only its
+ * own key. Before that, flipping a switch IS the answer, and it must answer for the other kind
+ * too: both ship ON, so writing `{ [key]: on, notifyConsentAsked: true }` alone left the other kind
+ * on for someone who never pressed Enable — and the tour's skip, seeing the question answered,
+ * would not decline it either. The other kind is recorded as declined; its switch shows that.
+ */
+export function notifyTogglePatch(
+  key: 'notifyOnClaudeDone' | 'notifyOnNeedsYou',
+  on: boolean,
+  consentAsked: boolean
+): Partial<ReturnType<typeof notifyConsentPatch>> {
+  return consentAsked ? { [key]: on } : { ...notifyConsentPatch(false), [key]: on }
 }
 
 function cooledDown(now: number, last: number | undefined): boolean {
