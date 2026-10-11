@@ -5,6 +5,12 @@ import type { DesktopWallpaper, WallpaperStill } from '../../shared/wallpaper'
 import type { AlertSoundSaveResult } from '../../shared/alert-sound'
 import type { RecentConversationsRequest, RecentConversationsResult } from '../../shared/recent-conversations'
 import type {
+  AgentSessionsDetectRequest,
+  AgentSessionsDetectResult,
+  SharedSessionsRequest,
+  SharedSessionsResult
+} from '../../shared/agent-sessions'
+import type {
   RunConfigApi,
   RunDevicesResult,
   RunEntriesResult,
@@ -1086,6 +1092,24 @@ export function buildRecentConversationsApi(client: RpcClient): Pick<NodeTermina
   }
 }
 
+/** agent-sessions, answered by the SERVER's core: detection reads the server's own agent config (the
+ *  machine the browser's sessions run on) and the listing reads the server's working tree. A failed
+ *  request is `{ok:false}` — never "not installed" or "nothing shared". */
+export function buildAgentSessionsApi(client: RpcClient): Pick<NodeTerminalApi, 'agentSessions'> {
+  return {
+    agentSessions: {
+      detect: (req: AgentSessionsDetectRequest) =>
+        (client.request(IPC.agentSessionsDetect, req) as Promise<AgentSessionsDetectResult>).catch(
+          () => ({ ok: false as const, reason: 'failed' as const })
+        ),
+      listShared: (req: SharedSessionsRequest) =>
+        (client.request(IPC.agentSessionsListShared, req) as Promise<SharedSessionsResult>).catch(
+          () => ({ ok: false as const, reason: 'failed' as const })
+        )
+    }
+  }
+}
+
 export function buildWallpaperApi(client: RpcClient): Pick<NodeTerminalApi, 'wallpaper'> {
   return {
     wallpaper: {
@@ -1418,6 +1442,7 @@ export async function installWsBridge(): Promise<boolean> {
     ...buildSessionMemoryApi(client),
     ...buildWatchLinkApi(client),
     ...buildRecentConversationsApi(client),
+    ...buildAgentSessionsApi(client),
     ...buildWallpaperApi(client),
     ...buildRunConfigApi(client),
     ...buildTriggersApi(client),

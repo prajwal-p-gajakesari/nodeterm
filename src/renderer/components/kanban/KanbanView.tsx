@@ -44,6 +44,7 @@ import { issueKey, issueRefFromHtmlUrl, issueUrl, type IssueRef } from '@shared/
 import { NO_ISSUE_RUNS, boundRunsByIssue, type IssueRun } from '../../lib/issueRuns'
 import { useGitHubIssues } from '../../state/githubIssues'
 import { useAgentStatus } from '../../state/agentStatus'
+import { refreshShareFacts, useAgentSessionsFacts } from '../../state/agentSessions'
 import { useSession } from '../../session/session'
 import { KanbanSourceFilter, type KanbanSource } from './KanbanSourceFilter'
 import { GitHubIssueSummaryModal } from './GitHubIssueSummaryModal'
@@ -857,9 +858,16 @@ export const KanbanView = memo(function KanbanView({
     dragRef.current = null
   }, [])
   const handleCardContext = useCallback(
-    (id: string, x: number, y: number) => setCardMenu({ nodeId: id, x, y }),
-    []
+    (id: string, x: number, y: number) => {
+      setCardMenu({ nodeId: id, x, y })
+      // The card's "Share session to repo" row reads cached facts (state/agentSessions.ts): ask again
+      // for this node; the subscription below redraws the open menu if an answer changed.
+      void refreshShareFacts(projectId, { only: [id] })
+    },
+    [projectId]
   )
+  // Only while a card menu is open (the selector is null otherwise, so nothing re-renders).
+  useAgentSessionsFacts((s) => (cardMenu ? s : null))
   const handleRenameColumn = useCallback(
     (columnId: string, t: string) => commit(renameColumn(board, columnId, t)),
     [board, commit]

@@ -4360,6 +4360,8 @@ export interface NodeTerminalApi {
   devPorts: import('./dev-ports').DevPortsApi
   /** "Open recent" — the newest agent conversations in this machine's CLI histories. */
   recentConversations: import('./recent-conversations').RecentConversationsApi
+  /** The optional agent-sessions integration: detection + the repository's shared sessions. */
+  agentSessions: import('./agent-sessions').AgentSessionsApi
   wallpaper: import('./wallpaper').WallpaperApi
   /** Run node host side (launch.json, devices, launcher, status, stop, signals, reload on save). */
   runConfig: import('./run-config').RunConfigApi

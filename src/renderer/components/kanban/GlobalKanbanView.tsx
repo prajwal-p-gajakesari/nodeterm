@@ -4,6 +4,7 @@ import { AGENT_CONFIG, BUILTIN_AGENT_IDS, type AgentId } from '@shared/agents/co
 import { useProjects } from '../../state/projects'
 import { useSettings } from '../../state/settings'
 import { useBoardWallpaperStyle } from '../../state/wallpaper'
+import { refreshShareFacts, useAgentSessionsFacts } from '../../state/agentSessions'
 import {
   addColumn, assignNode, assignedTo, boardLabels, cardMatchesLabelFilter, cardMeta, columnForNode,
   deleteColumn, labelsForCard, moveColumn,
@@ -102,6 +103,8 @@ const Swimlane = memo(function Swimlane({
     [onModalChange, projectId]
   )
   const [cardMenu, setCardMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null)
+  // Redraw an open card menu when a fact its share row shows changes (null while closed: no renders).
+  useAgentSessionsFacts((s) => (cardMenu ? s : null))
   const [labelFilter, setLabelFilter] = useState<string[]>([])
   const [collapsed, setCollapsed] = useState(false)
   const activePortsProjectId = useProjects((s) => s.activeProjectId)
@@ -241,7 +244,11 @@ const Swimlane = memo(function Swimlane({
           meta={cardMeta(board, s.id)}
           labels={labelsByCard.get(s.id) ?? []}
           onOpen={setModalNodeId}
-          onContext={(id, x, y) => setCardMenu({ nodeId: id, x, y })}
+          onContext={(id, x, y) => {
+            setCardMenu({ nodeId: id, x, y })
+            // The share row reads cached facts (state/agentSessions.ts): ask again for this card's node.
+            void refreshShareFacts(projectId, { only: [id] })
+          }}
           onDragStart={handleCardDragStart}
           onDragEnd={handleDragEnd}
           onDropAt={onDropAt}

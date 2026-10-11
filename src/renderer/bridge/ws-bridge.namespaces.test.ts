@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
+  buildAgentSessionsApi,
   buildClaudeAccountsApi,
   buildFilesApi,
   buildRealApi,
@@ -307,5 +308,33 @@ describe('buildWatchLinkApi', () => {
     expect(install).toContain('...buildWatchLinkApi(client)')
     const relay = readFileSync(join(__dirname, 'relay-api.ts'), 'utf8').replace(/\r\n/g, '\n')
     expect(relay).not.toContain('buildWatchLinkApi')
+  })
+})
+
+// agent-sessions in the Server Edition: answered by the SERVER's core (its agent config, its working
+// trees). A dead bridge is "could not look", never "not installed" / "nothing shared".
+describe('buildAgentSessionsApi', () => {
+  it('requests both channels with the caller’s argument', async () => {
+    const c = fakeClient()
+    const api = buildAgentSessionsApi(c as never)
+    await api.agentSessions.detect({ agent: 'codex', accountId: 'a1' })
+    await api.agentSessions.listShared({ repoRoot: '/srv/repo' })
+    expect(c.calls).toEqual([
+      { kind: 'request', method: IPC.agentSessionsDetect, args: [{ agent: 'codex', accountId: 'a1' }] },
+      { kind: 'request', method: IPC.agentSessionsListShared, args: [{ repoRoot: '/srv/repo' }] }
+    ])
+  })
+
+  it('a rejected request is ok:false, not an empty answer', async () => {
+    const c = { ...fakeClient(), request: () => Promise.reject(new Error('socket closed')) }
+    const api = buildAgentSessionsApi(c as never)
+    await expect(api.agentSessions.detect({ agent: 'claude' })).resolves.toEqual({ ok: false, reason: 'failed' })
+    await expect(api.agentSessions.listShared({ repoRoot: '/r' })).resolves.toEqual({ ok: false, reason: 'failed' })
+  })
+
+  it('the stub (a relay tab) says it could not look', async () => {
+    const stub = buildStubApi()
+    await expect(stub.agentSessions.detect({ agent: 'claude' })).resolves.toEqual({ ok: false, reason: 'unsupported' })
+    await expect(stub.agentSessions.listShared({ repoRoot: '/r' })).resolves.toEqual({ ok: false, reason: 'unsupported' })
   })
 })

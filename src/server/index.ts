@@ -116,6 +116,7 @@ import { createServerWorkspaceWatcher, outsideEditPublisher } from './workspace-
 import { registerTranscriptIpc } from '../core/transcript-ipc'
 import { registerChatCatalogIpc } from '../core/chat-catalog'
 import { registerRecentConversationsIpc } from '../core/recent-conversations'
+import { registerAgentSessionsIpc } from '../core/agent-sessions'
 import { registerContextEnsureIpc } from '../core/context-ensure'
 import { IPC } from '@shared/ipc'
 import { WhisperModelStore } from '../core/speech/whisper-models'
@@ -573,6 +574,8 @@ export async function startServer(
   registerChatCatalogIpc({ isRemoteNode: (nodeId) => !!workspaceStore.sshProjectIdForNode(nodeId) })
   // "Open recent": the SERVER host's agent histories — the machine the browser's sessions run on.
   registerRecentConversationsIpc()
+  // agent-sessions (optional, detected): the SERVER host's agent config and working trees.
+  registerAgentSessionsIpc()
   // The context meter's mount-time rehydration, registered beside the read channels and for the
   // same reason: the tails it feeds are the ones created just above. Until this landed the Server
   // Edition had NO handler for `context:ensure` at all — the browser cast it and nothing received

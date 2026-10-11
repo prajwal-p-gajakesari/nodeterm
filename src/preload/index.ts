@@ -4,6 +4,7 @@ import { IPC } from '../shared/ipc'
 import type { AlertSoundKind } from '../shared/alert-sound'
 import { resolveUiScale } from '../shared/ui-scale'
 import type { RecentConversationsRequest } from '../shared/recent-conversations'
+import type { AgentSessionsDetectRequest, SharedSessionsRequest } from '../shared/agent-sessions'
 import type {
   CanvasMutation,
   CanvasState,
@@ -553,6 +554,10 @@ const api: NodeTerminalApi = {
   recentConversations: {
     list: (req?: RecentConversationsRequest) =>
       ipcRenderer.invoke(IPC.recentConversationsList, req)
+  },
+  agentSessions: {
+    detect: (req: AgentSessionsDetectRequest) => ipcRenderer.invoke(IPC.agentSessionsDetect, req),
+    listShared: (req: SharedSessionsRequest) => ipcRenderer.invoke(IPC.agentSessionsListShared, req)
   },
   wallpaper: {
     listStills: () => ipcRenderer.invoke(IPC.wallpaperListStills),

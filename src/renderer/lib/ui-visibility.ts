@@ -31,6 +31,9 @@ export const HIDEABLE_MENU_ITEMS: readonly HideableRow[] = [
   // The ROW that opens the create dialog. The LIVE chip that says a terminal IS being broadcast is
   // deliberately in neither inventory (lib/live-link.guard.test.ts).
   { id: 'live-link', label: 'Share live link' },
+  // The optional agent-sessions row: shown disabled (with the install hint) wherever it cannot run,
+  // so a user who never installs agent-sessions can drop it.
+  { id: 'share-session', label: 'Share session to repo' },
   { id: 'vanilla-restart', label: 'Restart on subscription' }
 ]
 

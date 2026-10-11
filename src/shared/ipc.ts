@@ -68,6 +68,10 @@ export const IPC = {
   transcriptExists: 'transcript:exists',
   /** "Open recent": the newest agent conversations on THIS machine's disk (core/recent-conversations.ts). */
   recentConversationsList: 'recent-conversations:list',
+  /** The optional agent-sessions integration (core/agent-sessions.ts): is it installed for a node's
+   *  agent + account, and which sessions were shared in a repository's `.claude/sessions`. */
+  agentSessionsDetect: 'agent-sessions:detect',
+  agentSessionsListShared: 'agent-sessions:list-shared',
   claudeAccountsAdd: 'claude-accounts:add',
   claudeAccountsWaitLogin: 'claude-accounts:wait-login',
   claudeAccountsCancelWait: 'claude-accounts:cancel-wait',

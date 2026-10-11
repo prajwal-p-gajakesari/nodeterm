@@ -102,6 +102,12 @@ export const HOST_ONLY_CHANNELS: ReadonlySet<string> = new Set([
   // every project. A relay tab lists its OWN machine's history (relay-api keeps it `...local`), so
   // no legitimate peer asks the host for this.
   IPC.recentConversationsList,
+  // agent-sessions: detection reads the host user's own agent config (plugin list, skills dirs), and
+  // the listing reads any absolute path's `.claude/sessions` on the host. A relay tab refuses both
+  // before asking (its nodes and repositories are the host's; relay-api takes the stub), so no
+  // legitimate peer asks the host for either.
+  IPC.agentSessionsDetect,
+  IPC.agentSessionsListShared,
   // The host's settings. `settings:save` is the dangerous half: `modelGateway.baseUrl` is the TRUST
   // ANCHOR `agent:discover-models` uses to decide whether it may resolve the stored
   // `${secret:model-gateway-api-key}` (core/agent-env-ipc.ts), so a peer that could save settings
