@@ -201,6 +201,19 @@ describe('buildClaudeAccountsApi', () => {
     ])
   })
 
+  // "Share ~/.claude setup" is core end to end, so the Server Edition's switch and status read are
+  // real passthroughs to the machine the browser is served from — never the E_UNSUPPORTED stub.
+  it('setup sharing requests its two real channels', async () => {
+    const c = fakeClient()
+    const { claudeAccounts } = buildClaudeAccountsApi(c as never)
+    await claudeAccounts.setSetupSharing('a1', true)
+    await claudeAccounts.setupSharingStatus('a1')
+    expect(c.calls).toEqual([
+      { kind: 'request', method: IPC.claudeAccountsSetSetupSharing, args: ['a1', true] },
+      { kind: 'request', method: IPC.claudeAccountsSetupSharingStatus, args: ['a1'] }
+    ])
+  })
+
   // Same trap as buildSessionMemoryApi's: buildStubApi() already satisfies `claudeAccounts`, so a
   // dropped spread compiles and the stub silently wins in every browser session.
   it('is spread into the assembled window.nodeTerminal', () => {

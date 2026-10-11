@@ -46,6 +46,7 @@ import {
   type HostedSelf,
   type HostedSessionApi,
   type ClaudeSkillShareResult,
+  type ClaudeSetupShareResult,
   type ClaudeSessionCopyResult,
   type CodexApi,
   type CodexIdentityCaps,
@@ -1270,6 +1271,16 @@ export function buildClaudeAccountsApi(client: RpcClient): Pick<NodeTerminalApi,
           id,
           enabled
         ) as Promise<ClaudeSkillShareResult>,
+      // Real, for the same reason: core does the whole thing on the machine the browser is served
+      // from, which is the machine whose `~/.claude` setup is shared.
+      setSetupSharing: (id, enabled) =>
+        client.request(
+          IPC.claudeAccountsSetSetupSharing,
+          id,
+          enabled
+        ) as Promise<ClaudeSetupShareResult>,
+      setupSharingStatus: (id) =>
+        client.request(IPC.claudeAccountsSetupSharingStatus, id) as Promise<ClaudeSetupShareResult>,
       // Real: the copy is core, on the machine the browser is served from — the same machine whose
       // account dirs the Server Edition's panes run under.
       // An SSH ctx is forwarded as-is: the server registers no SSH leg, so core refuses it

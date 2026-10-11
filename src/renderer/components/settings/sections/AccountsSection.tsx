@@ -1,6 +1,10 @@
 import { Fragment, useEffect, useState } from 'react'
 import { AgentIcon } from '../../../lib/agentIcons'
-import type { ClaudeAccount, ClaudeSkillShareResult } from '@shared/types'
+import type {
+  ClaudeAccount,
+  ClaudeSetupShareResult,
+  ClaudeSkillShareResult
+} from '@shared/types'
 import type { CodexAccount } from '@shared/codex-account'
 import { E_UNSUPPORTED } from '@shared/rpc'
 import { sshHostKey } from '@shared/ssh'
@@ -25,6 +29,7 @@ import {
 import { configDirLabel, unlinkedConfigDirs } from '../../../lib/accountChip'
 import { presentAccount } from '../../../lib/accountPresentation'
 import { skillShareNote } from '../../../lib/skillSharing'
+import { setupShareView } from '../../../lib/setupSharing'
 import { codexAccountSelectable } from '../../../canvas/codex-account-switch'
 import { ConfirmDialog } from '../../ConfirmDialog'
 import { SettingsSection } from '../SettingsSection'
@@ -194,6 +199,7 @@ function ManagedAccountRow({
   color,
   onColor,
   extra,
+  notice,
   actions,
   blockedReason
 }: {
@@ -206,6 +212,9 @@ function ManagedAccountRow({
   color?: string
   onColor: (color?: string) => void
   extra?: React.ReactNode
+  /** Something about this account the user must not miss, shown on the row itself — never inside
+   *  the folded options, where a "your shared settings were replaced" line would sit unread. */
+  notice?: React.ReactNode
   actions: React.ReactNode
   blockedReason?: string
 }): React.JSX.Element {
@@ -239,12 +248,13 @@ function ManagedAccountRow({
         {blockedReason ? (
           <p className="text-[11px] text-[color:var(--warn)]">{blockedReason}</p>
         ) : null}
+        {notice}
         {/* The per-account options are folded: a full palette (and, for Claude, the skills switch)
             under every account made the list unreadable. The summary keeps the current color in
             view, so a folded row still says what it is set to. */}
         <details className="group pt-1">
           <summary className="flex cursor-pointer select-none items-center gap-2 text-[12px] text-muted hover:text-text">
-            <span>{extra ? 'Node color & skills' : 'Node color'}</span>
+            <span>{extra ? 'Node color & sharing' : 'Node color'}</span>
             <span
               aria-hidden
               className={cn('inline-block size-3 rounded-full', color ? '' : 'border border-border')}
@@ -414,6 +424,72 @@ function SkillSharingRow({
   )
 }
 
+/**
+ * The per-account "Share ~/.claude setup" switch: settings.json (with the plugins it enables),
+ * CLAUDE.md, agents, commands and output styles — everything a user sets up once in `~/.claude`
+ * that a managed account's own config dir otherwise replaces (`core/claude-setup-share.ts`).
+ *
+ * Off by default, like the skills switch beside it, and for the same reason: an account's
+ * isolation is often the point. The inline copy keeps the one fact a user must not miss — these
+ * are LINKED, so an edit from either side changes the same file — and the tooltip carries the rest,
+ * including what is never shared (the login, user MCP servers, conversations). The summary under
+ * the switch is the core's re-read of the account dir; warnings go on the row (`notice`).
+ */
+function SetupSharingRow({
+  account,
+  summary,
+  onChange
+}: {
+  account: ClaudeAccount
+  summary: string | null
+  /** Resolves to a line to show instead of the summary (an unsupported surface), or null. */
+  onChange: (enabled: boolean) => Promise<string | null>
+}): React.JSX.Element {
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
+  const remote = !!account.host
+  const on = !!account.shareSystemSetup
+  return (
+    <div className="pt-1">
+      <div className="flex items-center gap-2">
+        <Switch
+          checked={on}
+          disabled={remote || busy}
+          ariaLabel={`Share ~/.claude setup with ${account.label || account.id}`}
+          onChange={(v) => {
+            setBusy(true)
+            setNote(null)
+            void onChange(v)
+              .then(setNote)
+              .catch((e: unknown) => setNote(errorText(e, 'Could not update setup sharing.')))
+              .finally(() => setBusy(false))
+          }}
+        />
+        <span
+          className="text-[12px] text-muted"
+          title={
+            remote
+              ? undefined
+              : 'Links this machine’s ~/.claude settings.json (hooks, permissions, env, status line, enabled plugins), installed plugins, CLAUDE.md, agents, commands and output styles into the account. They are shared, not copied, so an edit from either side changes the same file. The account’s own copies are set aside and come back when you turn this off. Never shared: the login, user MCP servers (claude mcp add -s user) and conversations.'
+          }
+        >
+          Share ~/.claude setup
+        </span>
+        <span className="text-[11px] text-muted">
+          {remote
+            ? 'Not available for accounts on an SSH host — their setup lives on that machine.'
+            : '— settings, plugins, CLAUDE.md, agents, commands, output styles; linked, not copied'}
+        </span>
+      </div>
+      {note ? (
+        <p className="pt-1 text-[11px] text-[color:var(--warn)]">{note}</p>
+      ) : summary ? (
+        <p className="pt-1 text-[11px] text-muted">{summary}</p>
+      ) : null}
+    </div>
+  )
+}
+
 /** Counts nodes bound to an account across every project's SERIALIZED nodes. The active
  *  project's live React Flow edits since the last commit aren't reflected here, so the count
  *  can be slightly stale for the active canvas — acceptable for a confirmation warning. */
@@ -464,6 +540,9 @@ export function AccountsSection({ isActive }: { isActive: boolean }): React.JSX.
   // E_UNSUPPORTED once — after that the button is hidden rather than offered and broken. Typing
   // the path still works, which is why Browse is a convenience and never the only way in.
   const [browseUnsupported, setBrowseUnsupported] = useState(false)
+  /** "Share ~/.claude setup": the core's last report per LOCAL account id — read when the panel
+   *  opens and replaced by each switch flip, which returns a re-read of the account dir. */
+  const [setupShare, setSetupShare] = useState<Record<string, ClaudeSetupShareResult>>({})
   /**
    * Config dirs SEEN running on this core that we have no account for — the one-click Link
    * candidates. A primitive selector so the settings page does not re-render on every hook event
@@ -566,6 +645,37 @@ export function AccountsSection({ isActive }: { isActive: boolean }): React.JSX.
     }
   }, [isActive, codexAccounts])
 
+  // "Share ~/.claude setup": read every LOCAL account's status when the panel opens. Without this a
+  // shared settings.json that something has since replaced with a regular file (`diverged`), or a
+  // ~/.claude/settings.json that now replaces the account's own login, would sit under a switch that
+  // still reads "on". The id list is the dependency, JSON-encoded (an id is hand-editable text), so
+  // an account added or removed while the panel is open is read too — and so is the list that
+  // arrives when settings hydrate after mount.
+  const localClaudeIds = JSON.stringify(accounts.filter((a) => !a.host).map((a) => a.id))
+  useEffect(() => {
+    if (!isActive) return
+    let cancelled = false
+    for (const id of JSON.parse(localClaudeIds) as string[]) {
+      // From a resolved promise, so a bridge without the method rejects instead of throwing in the
+      // effect. An unsupported surface shows no status; any other failure says it could not look.
+      void Promise.resolve()
+        .then(() => window.nodeTerminal.claudeAccounts.setupSharingStatus(id))
+        .then((res) => {
+          if (!cancelled) setSetupShare((m) => ({ ...m, [id]: res }))
+        })
+        .catch((e: unknown) => {
+          if (cancelled || isUnsupported(e)) return
+          setSetupShare((m) => ({
+            ...m,
+            [id]: { items: [], identityKeys: [], setAsideDir: '', error: errorText(e, 'failed') }
+          }))
+        })
+    }
+    return () => {
+      cancelled = true
+    }
+  }, [isActive, localClaudeIds])
+
   // ── Claude ───────────────────────────────────────────────────────────────────────────────────
   const setLabel = (id: string, label: string): void =>
     applyAccounts((accs) => accs.map((a) => (a.id === id ? { ...a, label } : a)))
@@ -594,6 +704,30 @@ export function AccountsSection({ isActive }: { isActive: boolean }): React.JSX.
       )
     }
     return skillShareNote(res, enabled)
+  }
+
+  /**
+   * Flip "Share ~/.claude setup" for one account. The same contract as the skills switch above:
+   * the FILESYSTEM is reconciled first and the flag is persisted only if that came back without a
+   * refusal or a failure to run — the flag is what the launch sweep replays. The result is a re-read
+   * of the account dir, so it replaces the row's status as-is: a partial result (one item EPERM'd)
+   * is shown for what it is rather than rounded to "on".
+   */
+  const setSetupSharing = async (id: string, enabled: boolean): Promise<string | null> => {
+    let res: ClaudeSetupShareResult
+    try {
+      res = await window.nodeTerminal.claudeAccounts.setSetupSharing(id, enabled)
+    } catch (e) {
+      if (isUnsupported(e)) return 'Sharing your setup is not available on this connection.'
+      throw e
+    }
+    if (!res.refused && !res.error) {
+      applyAccounts((accs) =>
+        accs.map((a) => (a.id === id ? { ...a, shareSystemSetup: enabled } : a))
+      )
+    }
+    setSetupShare((m) => ({ ...m, [id]: res }))
+    return null
   }
 
   // Open a login terminal for an account and wait (up to ~5 min) for the CLI to write its
@@ -917,6 +1051,8 @@ export function AccountsSection({ isActive }: { isActive: boolean }): React.JSX.
       linked: !!account.configDir,
       configDir: account.configDir
     })
+    const share = account.host ? undefined : setupShare[account.id]
+    const shareView = share ? setupShareView(share, !!account.shareSystemSetup) : null
     return (
       <ManagedAccountRow
         key={account.id}
@@ -951,7 +1087,25 @@ export function AccountsSection({ isActive }: { isActive: boolean }): React.JSX.
           </>
         }
         extra={
-          <SkillSharingRow account={account} onChange={(v) => setSkillSharing(account.id, v)} />
+          <>
+            <SkillSharingRow account={account} onChange={(v) => setSkillSharing(account.id, v)} />
+            <SetupSharingRow
+              account={account}
+              summary={shareView?.summary ?? null}
+              onChange={(v) => setSetupSharing(account.id, v)}
+            />
+          </>
+        }
+        notice={
+          shareView?.warnings.length ? (
+            <div className="space-y-0.5" role="status">
+              {shareView.warnings.map((w) => (
+                <p key={w} className="text-[11px] text-[color:var(--warn)]">
+                  {w}
+                </p>
+              ))}
+            </div>
+          ) : null
         }
         actions={
           <>

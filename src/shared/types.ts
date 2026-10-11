@@ -1685,6 +1685,16 @@ export interface ClaudeAccount {
    * account's skills live on its host and are out of scope for v1.
    */
   shareSystemSkills?: boolean
+  /**
+   * Share the rest of the machine's `~/.claude` setup with this account: settings.json (hooks,
+   * permissions, env, status line, enabled plugins) with the installed plugins, CLAUDE.md, agents,
+   * commands and output styles. OFF/absent = the account's own copies, which is the default. ON =
+   * each of those is LINKED into the account dir; the account's own copy is set aside in
+   * `<configDir>/.nodeterm-set-aside/` and put back when this is turned off
+   * (`core/claude-setup-share.ts`). Never the login, user MCP servers or conversations. LOCAL
+   * accounts only, like `shareSystemSkills`.
+   */
+  shareSystemSetup?: boolean
   createdAt: number
 }
 
@@ -3470,6 +3480,15 @@ export interface ClaudeAccountsApi {
    */
   setSkillSharing(id: string, enabled: boolean): Promise<ClaudeSkillShareResult>
   /**
+   * Turn "Share ~/.claude setup" on or off for one LOCAL account and reconcile the filesystem now.
+   * The renderer owns the settings flag (`shareSystemSetup`) and calls this for the effect. Never
+   * throws; the result is a READ of the account dir after the change, plus what failed.
+   */
+  setSetupSharing(id: string, enabled: boolean): Promise<ClaudeSetupShareResult>
+  /** The same per-item report with no write — what the Settings row shows when it opens, so a
+   *  shared file that was since replaced (`diverged`) is said rather than silently believed. */
+  setupSharingStatus(id: string): Promise<ClaudeSetupShareResult>
+  /**
    * Copy a conversation's transcript from one LOCAL account's config dir into another's (`undefined`
    * = the system `~/.claude`), so a node switched onto the target account resumes the SAME
    * conversation there with no `/login`. With an SSH `ctx` the same copy runs on that project's host,
@@ -3509,6 +3528,71 @@ export interface ClaudeSkillShareResult {
    * `remote-account`: an SSH account, whose skills live on its host (out of scope for v1).
    */
   refused?: 'same-directory' | 'remote-account'
+}
+
+/** What "Share ~/.claude setup" covers (`core/claude-setup-share-core.ts` SHARED_SETUP_ITEMS). */
+export type ClaudeSetupItemName =
+  | 'settings.json'
+  | 'plugins'
+  | 'CLAUDE.md'
+  | 'agents'
+  | 'commands'
+  | 'output-styles'
+
+/**
+ * One item's state in an account dir.
+ *  - `shared`: nodeterm's link to the `~/.claude` copy.
+ *  - `dangling`: nodeterm's link, but the `~/.claude` copy is gone.
+ *  - `shared-by-you`: not nodeterm's, but already resolves to the `~/.claude` copy (a hand-made
+ *    link); left alone in both directions.
+ *  - `diverged`: nodeterm linked it and something else sits there now — a program or editor
+ *    replaced the link with a regular file. Never overwritten.
+ *  - `own`: the account's own copy. `none`: nothing there.
+ */
+export type ClaudeSetupItemState = 'shared' | 'dangling' | 'shared-by-you' | 'diverged' | 'own' | 'none'
+
+/** Why a reconcile left an item alone, where that is something the person can act on. */
+export type ClaudeSetupSkip =
+  | 'withheld-identity'
+  | 'withheld-unreadable'
+  | 'set-aside-occupied'
+  | 'own-kept'
+  | 'diverged'
+  | 'not-restored'
+
+export interface ClaudeSetupShareItem {
+  name: ClaudeSetupItemName
+  state: ClaudeSetupItemState
+  /** The account's own copy sits in the set-aside folder (put back when sharing is turned off). */
+  setAside: boolean
+  skipped?: ClaudeSetupSkip
+  /** errno-style code of a step that failed on this item in this call (e.g. `EPERM`). */
+  error?: string
+}
+
+/** What one `setSetupSharing` / `setupSharingStatus` found. A report, never an exception. */
+export interface ClaudeSetupShareResult {
+  items: ClaudeSetupShareItem[]
+  /** Keys `~/.claude/settings.json` sets that would replace or redirect the account's login —
+   *  NAMES only (`apiKeyHelper`, `env.ANTHROPIC_API_KEY`), never values. While any is set,
+   *  settings.json and plugins are not linked; if one appears after they were, the account is using
+   *  it and the row says so. */
+  identityKeys: string[]
+  /** `~/.claude/settings.json` exists but is not a JSON object, so it cannot be checked. */
+  settingsUnreadable?: boolean
+  /** The account's config dir and its set-aside folder, on this machine — named in the sentences
+   *  that ask the person to do something there (a managed account's path is otherwise unknown). */
+  configDir?: string
+  setAsideDir: string
+  /**
+   * Why nothing was done. `same-directory`: the account dir is `~/.claude` or inside it (or the
+   * reverse). `set-aside-unavailable`: `<dir>/.nodeterm-set-aside` exists and is not a real folder.
+   * `remote-account`: an SSH account, whose setup lives on its host (out of scope for v1).
+   */
+  refused?: 'same-directory' | 'set-aside-unavailable' | 'remote-account'
+  /** The reconcile itself could not run (errno-style code). `items` is then NOT a description of
+   *  the account dir — an empty list here means "could not look", never "nothing to share". */
+  error?: string
 }
 
 /**

@@ -83,8 +83,9 @@ export function normalizeLinkPath(
 }
 
 /** Is `child` the directory `parent` itself, or somewhere inside it? Separator-aware, so the same
- *  call answers for a Windows account dir and a POSIX one. */
-function isAtOrInside(parent: string, child: string, win: boolean): boolean {
+ *  call answers for a Windows account dir and a POSIX one. Also the same-directory refusal of the
+ *  sibling "share ~/.claude setup" planner (`claude-setup-share-core.ts`). */
+export function isAtOrInside(parent: string, child: string, win: boolean): boolean {
   const p = normalizeLinkPath(parent, win)
   const c = normalizeLinkPath(child, win)
   if (!p || !c) return false

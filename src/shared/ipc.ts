@@ -74,6 +74,10 @@ export const IPC = {
   claudeAccountsRemove: 'claude-accounts:remove',
   claudeAccountsLink: 'claude-accounts:link',
   claudeAccountsSetSkillSharing: 'claude-accounts:set-skill-sharing',
+  // "Share ~/.claude setup" (settings.json + plugins, CLAUDE.md, agents, commands, output styles):
+  // the switch's effect, and a read-only status for the Settings row (core/claude-setup-share.ts).
+  claudeAccountsSetSetupSharing: 'claude-accounts:set-setup-sharing',
+  claudeAccountsSetupSharingStatus: 'claude-accounts:setup-sharing-status',
   claudeAccountsCopySession: 'claude-accounts:copy-session',
   // Machine-scoped managed Codex accounts (S6). Add/device-login/removal, plus the three-phase,
   // owner-authorized account switch (resume the SAME conversation id, never fork) and the
