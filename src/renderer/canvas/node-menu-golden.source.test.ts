@@ -104,6 +104,7 @@ const GOLDEN_HIDE_IDS = [
   'collapse',
   'markdown-view',
   'refresh-terminal',
+  'share-session',
   'vanilla-restart'
 ]
 

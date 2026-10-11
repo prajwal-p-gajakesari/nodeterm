@@ -546,6 +546,19 @@ import {
 import { withPermissionMode } from '@shared/agents/approval-mode'
 import { promptFilePathError } from '@shared/agents/launch'
 import { encodeUtf8Base64, launchPromptFor } from '../lib/promptSpill'
+import {
+  agentSessionsAgentOf,
+  sharedSessionContinuePrompt,
+  type SharedSession
+} from '@shared/agent-sessions'
+import {
+  continuableSharedSessions,
+  sendShareCommand,
+  sharedSessionPaletteLabel,
+  shareSentNotice
+} from '../lib/agentSessionsShare'
+import { recordPresence, refreshShareFacts, shareFactsNodesOf } from '../state/agentSessions'
+import { chatAgentLabel } from '../lib/chatPanel'
 import { parseTeamSpec } from '../lib/teamSpec'
 import { relativeTime } from '../lib/relativeTime'
 import { AgentIcon } from '../lib/agentIcons'
@@ -6400,7 +6413,9 @@ export function Canvas() {
       // `awaitSetupGroup` holds the launch for that worktree frame's setup script (the issue card's
       // "Start with agent in a new worktree" opens the agent in the same tick as the frame) — the
       // same `PendingLaunch` hold a control open into a preparing frame gets (`setupHoldGroup`).
-      extra?: { issueRef?: IssueRef; awaitSetupGroup?: string }
+      // `promptFile`: a first prompt `launchPromptFor` spilled to a file (#706) — it wins over
+      // `initialPrompt` in the factory, exactly as on the canvas-control open paths.
+      extra?: { issueRef?: IssueRef; awaitSetupGroup?: string; promptFile?: string }
     ): { node: CanvasNode; placed: CanvasNode; projectId: string } | undefined => {
       // Resolve the target project LIVE, at click time — never from this callback's render
       // closure. Menu onClick closures outlive the render that built them (`setMenu` freezes
@@ -6479,7 +6494,8 @@ export function Canvas() {
         // Same funnel as the account above: the active project owns the node, so its own
         // `.nodeterm/settings.json` launch command layers over the global one.
         targetProjectId,
-        model
+        model,
+        extra?.promptFile
       )
       const issueRef = normalizeIssueRef(extra?.issueRef)
       const bound = issueRef ? { ...created, data: { ...created.data, issueRef } } : created
@@ -10295,6 +10311,56 @@ export function Canvas() {
     return node.selected && selected.length > 0 ? selected : [node.id]
   }, [])
 
+  // ── "Share session to repo" (the optional agent-sessions integration) ─────────────────────────
+  // Types the agent's own push command into the node's pane through the PROJECT's session api — a
+  // pane write, so a board card of a project that is not on screen shares too. Every gate that can
+  // change is re-read here, at click time (lib/agentSessionsShare.ts); the row only decides what it
+  // SHOWS. After the command is typed the user is taken to where the preview appears: the card on
+  // the Omni board, else the node (focusNodeById opens the card when the project's board is up).
+  // Declared above the ctx builders that close over it (a later const read at render is a TDZ).
+  const shareSessionToRepo = useCallback(async (nodeId: string, projectId: string): Promise<void> => {
+    const st = useProjects.getState()
+    const project = st.getProject(projectId)
+    const target = sessionForProject(projectId)
+    const flow: CanvasNode[] = liveCanvasHolds(nodesProjectIdRef.current, st.activeProjectId, projectId)
+      ? (nodesRef.current as CanvasNode[])
+      : project
+        ? nodeStatesToFlow(project.nodes)
+        : []
+    const n = flow.find((x) => x.id === nodeId)
+    const agentId = n?.type === 'terminal' ? createdAgentId(n.data) : undefined
+    if (!project || !n || !agentId || !agentSessionsAgentOf(agentId)) return
+    // The row's permanent refusals, re-checked: a menu frozen before the tab became a relay tab (or
+    // the project lost its folder) must not type anything.
+    if (target.source === 'relay' || project.ssh || isRemoteSessionNode(n.data) || !project.cwd) {
+      setNotice({ kind: 'error', text: 'Sharing this session is not available here — nothing was typed.' })
+      return
+    }
+    const customAgents = useSettings.getState().settings.customAgents
+    const label = chatAgentLabel(agentId, customAgents)
+    const accountId = typeof n.data.accountId === 'string' && n.data.accountId ? n.data.accountId : undefined
+    const out = await sendShareCommand(nodeId, agentId, label, {
+      status: () => useAgentStatus.getState().byId[nodeId] ?? {},
+      detect: async (agent) => {
+        const r = await target.api.agentSessions.detect({ agent, ...(accountId ? { accountId } : {}) })
+        recordPresence(agent, accountId, r.ok ? r.presence : 'unknown')
+        return r
+      },
+      paneRefusal: () =>
+        chatPaneRefusal(agentId, nodeId, { paneOwner: (id) => target.api.pty.paneOwner(id), customAgents }),
+      sendChatPrompt: (text) => target.api.pty.sendChatPrompt(nodeId, text, agentId)
+    })
+    if (out.kind === 'busy') return
+    if (out.kind !== 'sent') {
+      setNotice({ kind: 'error', text: out.text })
+      return
+    }
+    setNotice({ kind: 'info', text: shareSentNotice(label) })
+    const active = useProjects.getState().activeProjectId
+    if (isGlobalKanbanOpen()) useViewMode.getState().requestCard(nodeId)
+    else if (projectId === active) focusNodeRef.current(nodeId)
+  }, [])
+
   /** Everything the node action rows (lib/nodeActionItems) read from, or do through, the LIVE
    *  canvas. Built fresh on every menu open, like the rows themselves. */
   const liveNodeActionCtx = useCallback(
@@ -10326,7 +10392,16 @@ export function Canvas() {
       switchClaudeAccountNode,
       switchCodexAccountNode,
       connectedProjectIdForHost,
-      deleteNodes: (ids) => deleteNodes(ids)
+      deleteNodes: (ids) => deleteNodes(ids),
+      shareSession: (() => {
+        const projectId = nodesProjectIdRef.current || useProjects.getState().activeProjectId
+        const project = useProjects.getState().getProject(projectId)
+        return {
+          projectCwd: project?.cwd,
+          projectSsh: !!project?.ssh,
+          send: (nodeId: string) => shareSessionToRepo(nodeId, projectId)
+        }
+      })()
     }),
     [
       agentIdOf,
@@ -10353,6 +10428,7 @@ export function Canvas() {
       switchCodexAccountNode,
       connectedProjectIdForHost,
       deleteNodes,
+      shareSessionToRepo,
       session.source
     ]
   )
@@ -10393,13 +10469,18 @@ export function Canvas() {
         writes,
         liveLinkMenuItems: liveLink,
         connectedProjectIdForHost,
+        shareSession: {
+          projectCwd: project?.cwd,
+          projectSsh: !!project?.ssh,
+          send: (nodeId: string) => shareSessionToRepo(nodeId, projectId)
+        },
         refuse: () =>
           window.dispatchEvent(
             new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message: OFF_CANVAS_REFUSAL } })
           )
       })
     },
-    [nodeWritesFor, liveLinkMenuItems, liveNodeActionCtx, gatewayModels, gatewayStatus, gatewayError, connectedProjectIdForHost]
+    [nodeWritesFor, liveLinkMenuItems, liveNodeActionCtx, gatewayModels, gatewayStatus, gatewayError, connectedProjectIdForHost, shareSessionToRepo]
   )
 
   /** A kanban card's rows from the node builder (BOARD_NODE_ACTION_IDS), for a node of `projectId`. */
@@ -10875,16 +10956,44 @@ export function Canvas() {
       e.preventDefault()
       // For a group frame, remember WHERE inside it the user right-clicked so "New …" creation
       // entries can place the node at the cursor (parentInto converts to group-relative).
+      const at = screenToFlowPosition({ x: e.clientX, y: e.clientY })
+      const ids = targetIds(node)
       const items =
         node.type === 'group'
-          ? groupItems(node.id, screenToFlowPosition({ x: e.clientX, y: e.clientY }))
+          ? groupItems(node.id, at)
           : node.type === 'subagent' || node.type === 'loop'
             ? ephemeralItems(node.id)
-            : selectionItems(targetIds(node), screenToFlowPosition({ x: e.clientX, y: e.clientY }))
+            : selectionItems(ids, at)
       setMenu({ x: e.clientX, y: e.clientY, items })
+      // The share row reads cached facts (state/agentSessions.ts). Ask again now — a plugin installed
+      // since the last look — and rebuild THIS menu if an answer changed while it is still open.
+      if (node.type === 'terminal' && ids.length === 1) {
+        void refreshShareFacts(useProjects.getState().activeProjectId, {
+          nodes: shareFactsNodesOf(nodesRef.current),
+          only: ids
+        }).then((changed) => {
+          if (changed) setMenu((m) => (m && m.items === items ? { ...m, items: selectionItems(ids, at) } : m))
+        })
+      }
     },
     [groupItems, ephemeralItems, selectionItems, targetIds, screenToFlowPosition]
   )
+
+  // The share row's facts for the project on screen (state/agentSessions.ts): asked once per project
+  // load and again when a node is added or removed — never on a timer, and nothing per drag frame
+  // (`nodes.length` does not change while a node moves). A node whose agent or account changes in
+  // place is asked again when its menu opens (onNodeContextMenu). Nothing is asked for a project
+  // that cannot share, or when no node runs an agent agent-sessions pushes from.
+  const nodeCount = nodes.length
+  useEffect(() => {
+    void refreshShareFacts(activeProjectId, { nodes: shareFactsNodesOf(nodesRef.current) })
+  }, [nodeCount, activeProjectId])
+  // The Omni board's lanes are other projects' nodes: ask for them when it opens (a card menu asks
+  // again for its own node — KanbanView / GlobalKanbanView).
+  useEffect(() => {
+    if (!globalKanbanOpen) return
+    for (const p of useProjects.getState().projects) if (!p.closed) void refreshShareFacts(p.id)
+  }, [globalKanbanOpen])
 
   const onSelectionContextMenu = useCallback(
     (e: React.MouseEvent, selected: Node[]) => {
@@ -17788,6 +17897,80 @@ export function Canvas() {
     if (welcomeVisible || paletteOpen) void refreshRecentConvs()
   }, [welcomeVisible, paletteOpen, refreshRecentConvs])
 
+  // ── "Continue shared session" (the optional agent-sessions integration) ────────────────────────
+  // The sessions teammates shared in the ACTIVE project's repository (`.claude/sessions/*` in the
+  // working tree — what has been pulled), read once per palette open, never on a timer, through the
+  // project's own session api. A project that cannot have any — no folder, SSH, a relay tab, not a
+  // git repository — reads nothing and the palette shows no section (it has no disabled state).
+  const [sharedSessions, setSharedSessions] = useState<{ projectId: string; items: SharedSession[] } | null>(null)
+  const refreshSharedSessions = useCallback(async () => {
+    const projectId = useProjects.getState().activeProjectId
+    const project = useProjects.getState().getProject(projectId)
+    const target = sessionForProject(projectId)
+    if (!project?.cwd || project.ssh || target.source === 'relay') {
+      setSharedSessions(null)
+      return
+    }
+    try {
+      // Read at the repository ROOT: agent-sessions writes there, and the project may be a subfolder.
+      const repoRoot = await target.api.git.repoRoot(project.cwd)
+      const r = repoRoot ? await target.api.agentSessions.listShared({ repoRoot }) : null
+      setSharedSessions(r?.ok ? { projectId, items: r.items } : null)
+    } catch {
+      setSharedSessions(null)
+    }
+  }, [])
+  useEffect(() => {
+    if (paletteOpen) void refreshSharedSessions()
+  }, [paletteOpen, refreshSharedSessions])
+
+  /**
+   * Open a NEW agent node in the active project whose first prompt NAMES the shared folder and says
+   * how to read it — reference-only (`sharedSessionContinuePrompt`, which re-validates the folder
+   * name itself): nothing from meta.json, summary.md or the transcript is typed. The agent is the
+   * project's default (`resolveNewNodeAgent`), the account the project default (`addAgentNode`'s
+   * funnel, which also applies the permission mode), and an over-budget prompt is spilled to a file
+   * like every other generated launch prompt (`launchPromptFor`). The node keeps the agent's own
+   * title — a title from meta.json would be a teammate's text on this machine's node.
+   */
+  const continueSharedSession = useCallback(
+    async (dir: string): Promise<void> => {
+      const projectId = useProjects.getState().activeProjectId
+      const project = useProjects.getState().getProject(projectId)
+      const target = sessionForProject(projectId)
+      const prompt = sharedSessionContinuePrompt(dir)
+      if (!prompt) {
+        setNotice({ kind: 'error', text: 'That shared session’s folder name is not one agent-sessions writes — nothing was started.' })
+        return
+      }
+      if (!project?.cwd || project.ssh || target.source === 'relay') {
+        setNotice({ kind: 'error', text: 'Continuing a shared session needs a local project folder — nothing was started.' })
+        return
+      }
+      const agentId = resolveNewNodeAgent(undefined, projectId, useSettings.getState().settings)
+      const launch = await launchPromptFor(
+        { prompt, localFs: true },
+        { saveUpload: (name, data) => target.api.files.saveUpload(name, data), encodeBase64: encodeUtf8Base64 }
+      )
+      // The spill awaited: a project switch in between must not land the node in the new project.
+      if (useProjects.getState().activeProjectId !== projectId) return
+      const created = addAgentNode(
+        agentId,
+        undefined,
+        undefined,
+        undefined,
+        launch.prompt,
+        launch.promptFile ? { promptFile: launch.promptFile } : undefined
+      )
+      if (!created) return // addAgentNode already said why
+      // On a board the canvas is covered: open the new node's card instead (both boards honour the
+      // request once the card exists, which is a render after this one).
+      if (isGlobalKanbanOpen() || isKanbanOpen(projectId)) useViewMode.getState().requestCard(created.node.id)
+      else goToNode(created.placed)
+    },
+    [addAgentNode, goToNode]
+  )
+
   const now = useMemo(() => Date.now(), [transcriptHits])
   const transcriptCommands = useMemo<Command[]>(
     () =>
@@ -18286,10 +18469,26 @@ export function Canvas() {
     })
   }, [paletteOpen, recentConvs, recentActionFor, resumeRecentConversation])
 
+  // "Shared sessions" rows: one per shared session with a summary, newest first, capped like the
+  // recent rows. Titles and authors are teammates' text made safe by core and rendered as text.
+  const sharedSessionCommands = useMemo<Command[]>(() => {
+    if (!paletteOpen || !sharedSessions || sharedSessions.projectId !== activeProjectId) return []
+    return continuableSharedSessions(sharedSessions.items)
+      .slice(0, 30)
+      .map((shared): Command => ({
+        id: `shared-session:${shared.dir}`,
+        label: `Continue shared session: ${sharedSessionPaletteLabel(shared)}`,
+        hint: shared.dir,
+        section: 'Shared sessions',
+        icon: shared.agentId ? <AgentIcon agentId={shared.agentId} /> : <IconSessions />,
+        run: () => void continueSharedSession(shared.dir)
+      }))
+  }, [paletteOpen, sharedSessions, activeProjectId, continueSharedSession])
+
   const paletteCommands = useMemo(
-    () => (paletteOpen ? [...buildCommands(), ...recentCommands] : []),
+    () => (paletteOpen ? [...buildCommands(), ...recentCommands, ...sharedSessionCommands] : []),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- nodes stands in for nodesRef.current
-    [paletteOpen, buildCommands, recentCommands, nodes]
+    [paletteOpen, buildCommands, recentCommands, sharedSessionCommands, nodes]
   )
 
   // The palette's chord appears as a bare chip in two places (the cluster's search button and the

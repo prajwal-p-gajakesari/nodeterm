@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_SETTINGS, type CanvasNodeState } from '@shared/types'
 import type { MenuItem } from '../components/ContextMenu'
 import { useAgentStatus } from '../state/agentStatus'
+import { presenceKey, resetAgentSessionsFactsForTests, useAgentSessionsFacts } from '../state/agentSessions'
 import { useSettings } from '../state/settings'
 import { nodeStatesToFlow } from '../state/workspace'
 import {
@@ -39,6 +40,7 @@ function input(nodes: CanvasNodeState[], over: Partial<OffCanvasCtxInput> = {}):
     writes: { setColor: vi.fn(), pickIcon: vi.fn() },
     liveLinkMenuItems: () => [],
     connectedProjectIdForHost: () => undefined,
+    shareSession: { projectCwd: '/repo', projectSsh: false, send: vi.fn(async () => {}) },
     refuse: vi.fn(),
     ...over
   }
@@ -108,6 +110,23 @@ describe('offCanvasNodeActionCtx — a card of a background project', () => {
     ctx.duplicateNodes(['a1'])
     ctx.deleteNodes(['a1'])
     expect(i.refuse).toHaveBeenCalledTimes(2)
+  })
+
+  it('Share session to repo is a pane write: a background lane offers it and sends through ITS project', async () => {
+    resetAgentSessionsFactsForTests()
+    useAgentSessionsFacts.setState({ presence: { [presenceKey('claude', undefined)]: 'present' }, repo: { '/bg': 'repo' } })
+    const send = vi.fn(async () => {})
+    const i = input([stored('a1', { agentId: 'claude' })], {
+      shareSession: { projectCwd: '/bg', projectSsh: false, send }
+    })
+    const items = buildNodeActionItems(['a1'], undefined, offCanvasNodeActionCtx(i), { allow: BOARD_NODE_ACTION_IDS })
+    const share = row(items, 'Share session to repo')
+    if (!share || !('onClick' in share)) throw new Error('no share row')
+    // Not gated on an attached terminal: nothing about it needs the live canvas.
+    expect(share.disabled).toBe(false)
+    share.onClick()
+    expect(send).toHaveBeenCalledWith('a1')
+    expect(i.refuse).not.toHaveBeenCalled()
   })
 
   it('a node of the stored copy that names its agent only by the legacy claude tag is still an agent', () => {

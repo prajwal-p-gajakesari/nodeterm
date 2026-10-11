@@ -22,6 +22,7 @@ import {
   IconMarkdown,
   IconPower,
   IconReload,
+  IconSessions,
   IconSmiley,
   IconSwitch,
   IconTrash,
@@ -38,10 +39,12 @@ import {
 import { modelsForAgent, type GatewayModel } from '@shared/agents/model-gateway'
 import { sshHostKey, type SshServer } from '@shared/ssh'
 import { isRemoteSessionNode } from '@shared/worktree'
+import { agentSessionsAgentOf } from '@shared/agent-sessions'
 import { claudeSwitchHostKey, claudeSwitchTargets } from '../canvas/claude-account-switch'
 import { codexAccountSelectable } from '../canvas/codex-account-switch'
 import type { SessionSource } from '../session/session'
 import { useAgentStatus } from '../state/agentStatus'
+import { presenceFor, repoStateFor } from '../state/agentSessions'
 import { drivingNodeIds, useBrowserLease } from '../state/browserLease'
 import type { ModelDiscoveryStatus } from '../state/modelGateway'
 import { useSettings } from '../state/settings'
@@ -60,6 +63,8 @@ import { ZONES, type ZoneId } from './nodeZones'
 import { reopenVariants } from './reopenVariants'
 import { tidySeparators } from './tidySeparators'
 import { transferConversationItems, type TransferConversationHandler } from './transferItems'
+import { SHARE_SESSION_LABEL, shareRefusalText, shareRowHint, shareRowState } from './agentSessionsShare'
+import { chatAgentLabel } from './chatPanel'
 import { isHidden } from './ui-visibility'
 import type { NodeWrites } from './nodeWriteRouter'
 
@@ -87,6 +92,7 @@ export type NodeActionId =
   | 'live-link'
   | 'branch'
   | 'transfer'
+  | 'share-session'
   | 'restart'
   | 'switch-model'
   | 'switch-account'
@@ -134,6 +140,8 @@ export const BOARD_NODE_ACTION_IDS = [
   'colors',
   'icon',
   'live-link',
+  // A pane write, not a canvas write: a card of a project that is not on screen shares too.
+  'share-session',
   'switch-account'
 ] as const satisfies readonly NodeActionId[]
 
@@ -182,6 +190,17 @@ export interface NodeActionCtx {
   switchCodexAccountNode: (nodeId: string, targetAccountId: string | undefined) => Promise<unknown>
   connectedProjectIdForHost: (host?: string) => string | undefined
   deleteNodes: (ids: string[]) => void
+  /** "Share session to repo" (the optional agent-sessions integration): the facts of the project the
+   *  node belongs to, and the click. `send` types into the node's pane through that project's own
+   *  session api — a pane write, so it works for a board card whose project is not on screen. */
+  shareSession: ShareSessionCtx
+}
+
+export interface ShareSessionCtx {
+  projectCwd: string | undefined
+  /** The node's project is an SSH project. */
+  projectSsh: boolean
+  send: (nodeId: string) => Promise<unknown>
 }
 
 /** The menu for `ids`, optionally narrowed to a subset of sections. `at` is where the menu was
@@ -447,6 +466,7 @@ export function buildNodeActionSections(
             )
           : []
     },
+    { id: 'share-session', items: ids.length === 1 ? shareSessionRows(ids[0], ctx, hidden) : [] },
     { id: 'restart', items: session.restart },
     { id: 'switch-model', items: session.switchModel },
     { id: 'switch-account', items: session.switchAccount },
@@ -455,6 +475,43 @@ export function buildNodeActionSections(
     {
       id: 'delete',
       items: [{ label: 'Delete', icon: <IconTrash />, danger: true, onClick: () => ctx.deleteNodes(ids) }]
+    }
+  ]
+}
+
+/**
+ * "Share session to repo" — one row for a node whose agent agent-sessions can push from (claude,
+ * codex, opencode, gemini, by base harness), shown even when it cannot run: DISABLED with the reason
+ * (relay tab, SSH project, no folder / not a git repository, agent-sessions not installed for this
+ * agent + account, or the agent not idle at its prompt). The click re-checks everything that can
+ * change before it types (`sendShareCommand`). Hideable (`share-session`): it is a convenience, and a
+ * user who never installs agent-sessions should be able to drop the disabled row.
+ */
+function shareSessionRows(nodeId: string, ctx: NodeActionCtx, hidden: readonly string[]): MenuItem[] {
+  if (isHidden('share-session', hidden)) return []
+  const n = ctx.nodes.find((x) => x.id === nodeId)
+  const agentId = restartAgentIdOf(n)
+  const agent = agentSessionsAgentOf(agentId)
+  if (!n || !agentId || !agent) return []
+  const cwd = ctx.shareSession.projectCwd
+  const row = shareRowState({
+    agentId,
+    relay: ctx.sessionSource === 'relay',
+    remote: ctx.shareSession.projectSsh || isRemoteSessionNode(n.data),
+    projectCwd: cwd,
+    repo: cwd ? repoStateFor(cwd) : undefined,
+    presence: presenceFor(agent, (n.data.accountId as string | undefined) || undefined),
+    status: useAgentStatus.getState().byId[nodeId] ?? {}
+  })
+  if (!row) return []
+  const label = chatAgentLabel(agentId, useSettings.getState().settings.customAgents)
+  return [
+    {
+      label: SHARE_SESSION_LABEL,
+      icon: <IconSessions />,
+      disabled: row.refusal !== null,
+      hint: row.refusal ? shareRefusalText(row.refusal, label) : shareRowHint(agentId),
+      onClick: () => void ctx.shareSession.send(nodeId)
     }
   ]
 }
@@ -847,6 +904,8 @@ export interface OffCanvasCtxInput {
   writes: Pick<NodeWrites, 'setColor' | 'pickIcon'>
   liveLinkMenuItems: (nodeId: string) => MenuItem[]
   connectedProjectIdForHost: (host?: string) => string | undefined
+  /** The project's own share facts + send (a pane write — it needs no canvas). */
+  shareSession: ShareSessionCtx
   /** Raised by every row that needs the live canvas. None of them is on a board today
    *  (`BOARD_NODE_ACTION_IDS`); this keeps the day one is added from failing in silence. */
   refuse: () => void
@@ -901,6 +960,7 @@ export function offCanvasNodeActionCtx(o: OffCanvasCtxInput): NodeActionCtx {
     switchClaudeAccountNode: refuseLater,
     switchCodexAccountNode: refuseLater,
     connectedProjectIdForHost: o.connectedProjectIdForHost,
-    deleteNodes: refuse
+    deleteNodes: refuse,
+    shareSession: o.shareSession
   }
 }

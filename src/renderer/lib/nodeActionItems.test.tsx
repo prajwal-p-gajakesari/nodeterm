@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_SETTINGS } from '@shared/types'
 import type { MenuItem } from '../components/ContextMenu'
 import { useAgentStatus } from '../state/agentStatus'
+import { presenceKey, resetAgentSessionsFactsForTests, useAgentSessionsFacts } from '../state/agentSessions'
 import { useSettings } from '../state/settings'
 import type { CanvasNode } from '../state/workspace'
 import {
@@ -46,6 +47,7 @@ function fakeCtx(nodes: CanvasNode[], over: Partial<NodeActionCtx> = {}): NodeAc
     switchCodexAccountNode: async () => {},
     connectedProjectIdForHost: () => undefined,
     deleteNodes: vi.fn(),
+    shareSession: { projectCwd: '/repo', projectSsh: false, send: vi.fn(async () => {}) },
     ...over
   }
 }
@@ -241,5 +243,97 @@ describe('buildNodeActionItems — filters', () => {
   it('no spatial row is ever on the board list, nor a row the board owns itself', () => {
     for (const id of BOARD_SPATIAL_ROW_IDS) expect(BOARD_NODE_ACTION_IDS).not.toContain(id)
     for (const id of ['label', 'markdown-view', 'delete'] as const) expect(BOARD_NODE_ACTION_IDS).not.toContain(id)
+  })
+})
+
+describe('Share session to repo — the agent-sessions row (canvas menu and board cards)', () => {
+  const LABEL = 'Share session to repo'
+  const facts = (presence: Record<string, string>, repo: Record<string, string> = { '/repo': 'repo' }): void =>
+    useAgentSessionsFacts.setState({ presence, repo } as never)
+  beforeEach(() => {
+    resetAgentSessionsFactsForTests()
+    facts({ [presenceKey('claude', undefined)]: 'present', [presenceKey('codex', 'acct1')]: 'present' })
+    useAgentStatus.setState({ byId: { a1: { state: 'done', sessionId: 's1' } } } as never)
+  })
+
+  it('an idle claude agent in a git project with agent-sessions installed gets the row, enabled', () => {
+    const send = vi.fn(async () => {})
+    const items = buildNodeActionItems(
+      ['a1'],
+      undefined,
+      fakeCtx([term('a1', { agentId: 'claude', title: 'fix --yes --branch x' })], {
+        shareSession: { projectCwd: '/repo', projectSsh: false, send }
+      })
+    )
+    const r = row(items, LABEL)
+    expect(r).toBeDefined()
+    expect(disabledOf(items, LABEL)).toBe(false)
+    expect(hintOf(items, LABEL)).toMatch(/^Types \/sessions:push in this session/)
+    ;(r as { onClick: () => void }).onClick()
+    // The row hands over the node id and nothing else — no title, no flag can reach the command.
+    expect(send).toHaveBeenCalledWith('a1')
+  })
+
+  it('the account is the node’s own: a managed codex account reads its own presence', () => {
+    useAgentStatus.setState({ byId: { c1: { state: 'done' } } } as never)
+    const ctx = fakeCtx([term('c1', { agentId: 'codex', accountId: 'acct1' }), term('c2', { agentId: 'codex' })])
+    expect(disabledOf(buildNodeActionItems(['c1'], undefined, ctx), LABEL)).toBe(false)
+    // The system codex account was never detected here: "Checking…", not the managed account's answer.
+    expect(hintOf(buildNodeActionItems(['c2'], undefined, ctx), LABEL)).toMatch(/^Checking whether agent-sessions/)
+  })
+
+  it('is disabled with the reason — never silently missing — wherever it cannot run', () => {
+    const at = (over: Partial<NodeActionCtx>, data: Record<string, unknown> = {}): string | undefined => {
+      const items = buildNodeActionItems(['a1'], undefined, fakeCtx([term('a1', { agentId: 'claude', ...data })], over))
+      expect(disabledOf(items, LABEL)).toBe(true)
+      return hintOf(items, LABEL)
+    }
+    const share = (o: Partial<NodeActionCtx['shareSession']>): Partial<NodeActionCtx> => ({
+      shareSession: { projectCwd: '/repo', projectSsh: false, send: vi.fn(async () => {}), ...o }
+    })
+    expect(at({ sessionSource: 'relay' })).toBe('Not available for relay sessions.')
+    expect(at(share({ projectSsh: true }))).toMatch(/^Not available for SSH projects yet/)
+    expect(at({}, { ssh: { host: 'box', user: 'me' } })).toMatch(/^Not available for SSH projects yet/)
+    expect(at(share({ projectCwd: undefined }))).toMatch(/has no folder/)
+    facts({ [presenceKey('claude', undefined)]: 'present' }, { '/repo': 'not-repo' })
+    expect(at({})).toBe('This project’s folder is not a git repository.')
+    facts({ [presenceKey('claude', undefined)]: 'absent' })
+    expect(at({})).toContain('/plugin install sessions@agent-sessions')
+    facts({ [presenceKey('claude', undefined)]: 'disabled' })
+    expect(at({})).toMatch(/switched off/)
+    facts({ [presenceKey('claude', undefined)]: 'present' })
+    useAgentStatus.setState({ byId: { a1: { state: 'working', sessionId: 's1' } } } as never)
+    expect(at({})).toMatch(/is working — share once its turn is done/)
+    useAgentStatus.setState({ byId: { a1: { state: 'waiting', sessionId: 's1' } } } as never)
+    expect(at({})).toMatch(/waiting for an answer/)
+    useAgentStatus.setState({ byId: { a1: { state: 'done', hibernated: true } } } as never)
+    expect(at({})).toMatch(/asleep/)
+  })
+
+  it('only the four agents agent-sessions pushes from get it; a plain terminal and a selection do not', () => {
+    for (const agentId of ['codex', 'opencode', 'gemini']) {
+      facts({ [presenceKey(agentId as never, undefined)]: 'present' })
+      expect(row(buildNodeActionItems(['a1'], undefined, fakeCtx([term('a1', { agentId })])), LABEL)).toBeDefined()
+    }
+    for (const agentId of ['grok', 'copilot']) {
+      expect(row(buildNodeActionItems(['a1'], undefined, fakeCtx([term('a1', { agentId })])), LABEL)).toBeUndefined()
+    }
+    expect(row(buildNodeActionItems(['t1'], undefined, fakeCtx([term('t1')])), LABEL)).toBeUndefined()
+    const two = fakeCtx([term('a1', { agentId: 'claude' }), term('a2', { agentId: 'claude' })])
+    expect(row(buildNodeActionItems(['a1', 'a2'], undefined, two), LABEL)).toBeUndefined()
+  })
+
+  it('board parity: a card takes the same row', () => {
+    expect(BOARD_NODE_ACTION_IDS).toContain('share-session')
+    const items = buildNodeActionItems(['a1'], undefined, fakeCtx([term('a1', { agentId: 'claude' })]), {
+      allow: BOARD_NODE_ACTION_IDS
+    })
+    expect(top(items)).toContain(LABEL)
+    expect(disabledOf(items, LABEL)).toBe(false)
+  })
+
+  it('can be hidden from Settings like any other convenience row', () => {
+    useSettings.setState({ settings: { ...DEFAULT_SETTINGS, hiddenNodeMenuItems: ['share-session'] } })
+    expect(row(buildNodeActionItems(['a1'], undefined, fakeCtx([term('a1', { agentId: 'claude' })])), LABEL)).toBeUndefined()
   })
 })

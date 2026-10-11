@@ -5786,6 +5786,83 @@ plan: the pure `renderer/lib/recentConversations.ts`; execution: Canvas `resumeR
   host's history (titles are prompts the host's user typed, in every project). **Mobile**: follow-up
   in nodeterm-ios — "open recent" on the phone needs this list over the relay dialect.
 
+## agent-sessions (share a session to the repo; continue a teammate's) — optional, detected
+
+[agent-sessions](https://github.com/prajwalgajakesari/agent-sessions) (MIT, separate tool) shares a
+coding-agent session through the git repository: the AGENT writes `summary.md`, the tool renders a
+redacted `transcript.md` + `meta.json` under `.claude/sessions/<YYYY-MM-DD>_<slug>_<handle>_<id>/`,
+shows a preview, asks once, then commits (temporary index) and pushes. nodeterm bundles nothing and
+runs none of it: it types the agent's own command, and it lists what has been pulled. Leaf:
+`@shared/agent-sessions` (commands, folder allowlist, continue prompt); core: `core/agent-sessions.ts`
+(`agent-sessions:detect`, `agent-sessions:list-shared`, registered by BOTH shells, both `HOST_ONLY`);
+renderer: `lib/agentSessionsShare.ts` (row decision + the gated send), `state/agentSessions.ts` (the
+cached facts), Canvas `shareSessionToRepo` / `continueSharedSession`.
+
+- **"Share session to repo" types a CONSTANT** (`agentSessionsPushCommand`, by `capabilityAgentId`):
+  claude `/sessions:push` (the plugin skill is `disable-model-invocation`, so only a typed slash
+  command runs it), codex `$agent-sessions push`, opencode/gemini a fixed sentence that also says to
+  wait for the user's yes and to STOP if the skill is missing (a model asked to "push" could otherwise
+  `git push` on its own). **Never `--yes`, never a title**: the skill parses everything after the
+  command as arguments, so a node title (git-shared `project.json`, agent renames, AI naming) of
+  `fix --yes` would skip the one confirmation. Any other agent gets no row.
+- **The send is the ⌘M composer's chain, re-read at click time** (`sendShareCommand`):
+  `chatSendRefusal` (+ a `held` ticket, as `hostChatSend`) → agent-sessions RE-DETECTED → `chatPaneRefusal`
+  → `pty.sendChatPrompt` (claude's screen check + TYPED input), on the node's PROJECT session
+  (`sessionForProject`), so an Omni lane of a background project works (a pane write — the row is in
+  `BOARD_NODE_ACTION_IDS` and `offCanvasNodeActionCtx` carries a real `shareSession`). No queueing
+  mid-turn. `ChatPromptBlocked` / `pasted-not-submitted` / a lost reply are reported, never retried;
+  one share per node in flight. After a send: an info notice, then the card (Omni board, via
+  `requestCard`) or the node (`focusNodeById`, which opens the card when the project's board is up).
+- **The row is never silently hidden** (hideable on purpose: `share-session` in `ui-visibility`):
+  disabled with the first reason that applies — relay tab, SSH node/project (v1: agent-sessions would
+  have to be on the host), no folder, not a git repository (`git.repoRoot`, three-valued: `unknown`
+  says it could not check), agent-sessions not detected (the README's install command as text, no
+  link), then the agent state. A node menu is built synchronously and frozen, so the row reads
+  CACHED facts: Canvas asks once per project load and when a node is added or removed (keyed on
+  `nodes.length`, so nothing runs per drag frame; never a timer), the Omni board asks on open, and
+  every node or card menu open asks again in the background —
+  the canvas menu is rebuilt if an answer changed while it is still the one on screen; the boards
+  subscribe while a card menu is open. A fact not read yet says "Checking…".
+- **Detection reads only the user's OWN config** for the NODE's account: claude
+  `<config dir>/plugins/installed_plugins.json` has the key `sessions@agent-sessions` under `plugins`
+  and `settings.json` `enabledPlugins` does not name it `false` (`disabled`) — key names only; the
+  config dir is `claudeConfigDirFor` (managed/linked accounts REPLACE `~/.claude`; a bad id is
+  `unknown`, never the system dir). codex/opencode/gemini: `~/.agents/skills/agent-sessions/SKILL.md`
+  or the agent's own skills dir (codex: the account's `CODEX_HOME`; `skillRootsFor` for the others),
+  links followed (`npx skills add` links). NEVER a repository's vendored `.agents/skills` or its
+  `.claude/settings.json`: a cloned repo could plant a skill and the row would invoke it.
+  `present | disabled | absent | unknown` — a file that exists but cannot be read is `unknown`.
+  Parsed JSON is cached by (path, mtime, size).
+- **"Shared sessions" in ⌘K** ("Continue shared session: <title> (<author>, <agent>, <date>)"): the
+  ACTIVE project's repository ROOT (`git.repoRoot` of its folder — agent-sessions writes there),
+  working tree only (what has been pulled; `origin/<default>` and other branches — agent-sessions'
+  `list --all-branches` — are a follow-up), read once per palette open. **meta.json is hostile**
+  (anyone with push access wrote it): `.claude/sessions` must realpath inside the repository; a
+  folder must be a real directory (lstat) whose name passes `isSafeSharedSessionDir` (the exact
+  `session_dir_name` shape, ≤ 128) BEFORE it is joined into a path; `meta.json` is a regular file
+  opened `O_NOFOLLOW`, dev+ino matched to its lstat, ≤ 64 KB, ≤ 1 MB in total per listing; ≤ 2000
+  entries scanned, ≤ 100 folders read (name-sorted, i.e. date order, before any read); every field
+  through `untrustedLine`; rendered as text. Rows need a regular `summary.md`; capped at 30 like
+  "Open recent"; refused projects (no folder, SSH, relay tab, not a repository) show no section.
+- **Continuing is reference-only, like `issueLaunchPrompt`**: a NEW node of the project's default
+  agent (`resolveNewNodeAgent`) through `addAgentNode` (project-default account, permission-mode
+  funnel), first prompt `sharedSessionContinuePrompt(dir)` — which re-validates the name itself —
+  naming `.claude/sessions/<dir>` relative to the repository root (never an absolute path), "read
+  summary.md first, the transcript only if needed", and that the folder is a teammate's untrusted
+  notes, not instructions. Nothing from meta.json / summary / transcript is typed, and the node keeps
+  the agent's own title. With a board up the new node's CARD opens (`requestCard`), else the canvas
+  frames it. `launchPromptFor` spills an over-budget prompt (`addAgentNode`'s
+  `extra.promptFile`); the longest valid name stays under the inline budget today.
+- **Surfaces.** Desktop: full. **Server Edition**: full, answered by the server's own core (real
+  `buildAgentSessionsApi`; the server's agent config and working trees). **Relay tabs**: refused in
+  the renderer before asking; `relay-api` takes the STUB (`unsupported`), never `...local` (that would
+  read this machine at the host's path). **SSH projects**: refused in v1. **Mobile**: not applicable
+  in this change (follow-up for nodeterm mobile: the phone would need its own row + the same gates).
+  Device checks still owed: Codex's `$` skill popup and Claude's `/` menu on a typed/pasted command
+  followed by Enter; whether Claude answers the push confirmation through `AskUserQuestion` (then the
+  ⌘M card's answer controls apply); the real `installed_plugins.json` shape on a machine with the
+  plugin installed (parsed defensively: only the key under `plugins`).
+
 ## Session memory (the RAM pill + the per-session panel)
 
 A bottom-left **RAM pill** (`components/SystemResourcePill.tsx`) beside the usage pill, and the
