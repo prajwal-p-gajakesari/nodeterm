@@ -5,22 +5,29 @@ import type { AgentSessionsDetectResult } from '@shared/agent-sessions'
 const sessions: Record<string, { source: 'local' | 'relay' | 'server'; api: unknown }> = {}
 vi.mock('../session/session', () => ({ sessionForProject: (id: string) => sessions[id] }))
 
+import { DEFAULT_SETTINGS } from '@shared/types'
 import { useProjects } from './projects'
+import { useSettings } from './settings'
 import {
+  anyAgentSessionsPresent,
   presenceFor,
   presenceKey,
-  recordPresence,
-  refreshPresence,
+  recordDetect,
+  refreshDetect,
   refreshRepoState,
   refreshShareFacts,
   repoStateFor,
   resetAgentSessionsFactsForTests,
+  shadowFor,
   shareFactsNodesOf
 } from './agentSessions'
 
 function fakeApi(over: { detect?: (req: unknown) => Promise<AgentSessionsDetectResult>; repoRoot?: (cwd: string) => Promise<string | null> } = {}) {
   return {
-    agentSessions: { detect: vi.fn(over.detect ?? (async () => ({ ok: true as const, presence: 'present' as const }))), listShared: vi.fn() },
+    agentSessions: {
+      detect: vi.fn(over.detect ?? (async () => ({ ok: true as const, presence: 'present' as const, shadow: 'none' as const }))),
+      listShared: vi.fn()
+    },
     git: { repoRoot: vi.fn(over.repoRoot ?? (async (cwd: string) => cwd)) }
   }
 }
@@ -32,7 +39,7 @@ const project = (id: string, over: Record<string, unknown> = {}) => ({
   nodes: [
     { id: 'c1', kind: 'terminal', agentId: 'claude' },
     { id: 'c2', kind: 'terminal', agentId: 'claude' },
-    { id: 'x1', kind: 'terminal', agentId: 'codex', accountId: 'work' },
+    { id: 'x1', kind: 'terminal', agentId: 'codex', accountId: 'work', cwd: '/wt' },
     { id: 'g1', kind: 'terminal', agentId: 'grok' },
     { id: 't1', kind: 'terminal' }
   ],
@@ -42,21 +49,38 @@ const project = (id: string, over: Record<string, unknown> = {}) => ({
 beforeEach(() => {
   resetAgentSessionsFactsForTests()
   for (const k of Object.keys(sessions)) delete sessions[k]
+  useSettings.setState({ settings: { ...DEFAULT_SETTINGS } })
 })
 
-describe('refreshPresence / refreshRepoState', () => {
+describe('refreshDetect / recordDetect / refreshRepoState', () => {
   it('stores core’s answer; a failed request or a rejection is unknown, never absent', async () => {
-    expect(await refreshPresence(fakeApi().agentSessions, 'claude', undefined)).toBe(true)
+    expect(await refreshDetect(fakeApi().agentSessions, 'claude', undefined)).toBe(true)
     expect(presenceFor('claude', undefined)).toBe('present')
-    expect(await refreshPresence(fakeApi().agentSessions, 'claude', undefined)).toBe(false) // unchanged
-    await refreshPresence(fakeApi({ detect: async () => ({ ok: false, reason: 'failed' }) }).agentSessions, 'codex', undefined)
+    expect(await refreshDetect(fakeApi().agentSessions, 'claude', undefined)).toBe(false) // unchanged
+    await refreshDetect(fakeApi({ detect: async () => ({ ok: false, reason: 'failed' }) }).agentSessions, 'codex', undefined)
     expect(presenceFor('codex', undefined)).toBe('unknown')
-    await refreshPresence(fakeApi({ detect: async () => Promise.reject(new Error('x')) }).agentSessions, 'gemini', undefined)
+    await refreshDetect(fakeApi({ detect: async () => Promise.reject(new Error('x')) }).agentSessions, 'gemini', undefined)
     expect(presenceFor('gemini', undefined)).toBe('unknown')
+    expect(anyAgentSessionsPresent()).toBe(true)
+  })
+
+  it('the repository answer is kept per agent + cwd; a missing or failed one is unknown, never clearance', () => {
+    recordDetect('codex', undefined, '/r1', { ok: true, presence: 'present', shadow: 'present' })
+    recordDetect('codex', undefined, '/r2', { ok: true, presence: 'present' })
+    recordDetect('gemini', undefined, '/r1', { ok: false, reason: 'failed' })
+    expect([shadowFor('codex', '/r1'), shadowFor('codex', '/r2'), shadowFor('gemini', '/r1'), shadowFor('codex', '/r3')]).toEqual([
+      'present',
+      'unknown',
+      'unknown',
+      undefined
+    ])
+    // Absent records no repository fact at all.
+    recordDetect('opencode', undefined, '/r1', { ok: true, presence: 'absent' })
+    expect(shadowFor('opencode', '/r1')).toBeUndefined()
   })
 
   it('keys by agent AND account, as JSON: an id with a separator cannot forge another entry', () => {
-    recordPresence('claude', 'a","b', 'present')
+    recordDetect('claude', 'a","b', undefined, { ok: true, presence: 'present' })
     expect(presenceFor('claude', 'a')).toBeUndefined()
     expect(presenceKey('claude', undefined)).not.toBe(presenceKey('claude', 'null'))
   })
@@ -66,11 +90,12 @@ describe('refreshPresence / refreshRepoState', () => {
     const api = fakeApi({
       detect: () => new Promise((r) => (release = () => r({ ok: true, presence: 'absent' })))
     }).agentSessions
-    const a = refreshPresence(api, 'claude', undefined)
-    const b = refreshPresence(api, 'claude', undefined)
+    const a = refreshDetect(api, 'claude', undefined, '/r')
+    const b = refreshDetect(api, 'claude', undefined, '/r')
     release()
     await Promise.all([a, b])
     expect(api.detect).toHaveBeenCalledTimes(1)
+    expect(api.detect).toHaveBeenCalledWith({ agent: 'claude', cwd: '/r' })
   })
 
   it('repository: a root is repo, null is not-repo, a rejection is unknown', async () => {
@@ -94,10 +119,30 @@ describe('refreshShareFacts — through the project’s own session, only where 
     expect(await refreshShareFacts('p1')).toBe(true)
     expect(api.git.repoRoot).toHaveBeenCalledWith('/p1')
     expect(api.agentSessions.detect.mock.calls.map((c) => c[0])).toEqual([
-      { agent: 'claude' },
-      { agent: 'codex', accountId: 'work' }
+      { agent: 'claude', cwd: '/p1' },
+      { agent: 'codex', accountId: 'work', cwd: '/wt' }
     ])
     expect(repoStateFor('/p1')).toBe('repo')
+  })
+
+  it('INERT when absent: nothing past the presence answer — no git read', async () => {
+    const api = fakeApi({ detect: async () => ({ ok: true, presence: 'absent' }) })
+    sessions.p1 = { source: 'local', api }
+    useProjects.setState({ projects: [project('p1')] } as never)
+    await refreshShareFacts('p1')
+    expect(api.agentSessions.detect).toHaveBeenCalled()
+    expect(api.git.repoRoot).not.toHaveBeenCalled()
+    expect(repoStateFor('/p1')).toBeUndefined()
+  })
+
+  it('hidden in Settings: nothing is read at all', async () => {
+    useSettings.setState({ settings: { ...DEFAULT_SETTINGS, hiddenNodeMenuItems: ['share-session'] } })
+    const api = fakeApi()
+    sessions.p1 = { source: 'local', api }
+    useProjects.setState({ projects: [project('p1')] } as never)
+    expect(await refreshShareFacts('p1')).toBe(false)
+    expect(api.agentSessions.detect).not.toHaveBeenCalled()
+    expect(api.git.repoRoot).not.toHaveBeenCalled()
   })
 
   it('`only` narrows to the nodes a menu is open on', async () => {
@@ -105,7 +150,7 @@ describe('refreshShareFacts — through the project’s own session, only where 
     sessions.p1 = { source: 'local', api }
     useProjects.setState({ projects: [project('p1')] } as never)
     await refreshShareFacts('p1', { only: ['x1'] })
-    expect(api.agentSessions.detect.mock.calls.map((c) => c[0])).toEqual([{ agent: 'codex', accountId: 'work' }])
+    expect(api.agentSessions.detect.mock.calls.map((c) => c[0])).toEqual([{ agent: 'codex', accountId: 'work', cwd: '/wt' }])
   })
 
   it('asks nobody for a project that can never share: SSH, no folder, a relay tab, or no such agent', async () => {
@@ -133,6 +178,6 @@ describe('refreshShareFacts — through the project’s own session, only where 
         { id: 'a', type: 'terminal', data: { agentId: 'claude', accountId: 'w', title: 'x' } },
         { id: 's', type: 'sticky', data: { agentId: 'claude' } }
       ])
-    ).toEqual([{ id: 'a', agentId: 'claude', tags: undefined, accountId: 'w' }])
+    ).toEqual([{ id: 'a', agentId: 'claude', tags: undefined, accountId: 'w', cwd: undefined }])
   })
 })

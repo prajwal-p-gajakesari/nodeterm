@@ -254,15 +254,19 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   interpolate `issue.title`/`issue.body` into a prompt, and never add a path that posts an agent's
   output to GitHub on its own: posting is public, and only the user asks for it.
 
-- **A teammate's shared session reaches a pane only as a validated folder reference.** The
-  optional agent-sessions integration lists `.claude/sessions/*/meta.json` from the repository, and
-  everything in that folder was committed by someone else. A folder name passes
-  `isSafeSharedSessionDir` before it is joined into a path, `sharedSessionContinuePrompt` (the only
-  composer, which re-validates it) is the only way it becomes text, and nothing from `meta.json`, the
-  summary or the transcript is ever interpolated into a prompt or a node title. The other direction
-  is just as fixed: "Share session to repo" types the agent's own push command as a CONSTANT — never
-  `--yes`, never a title (the skill reads trailing text as flags) — through the ⌘M composer's gates.
-  CLAUDE.md § agent-sessions.
+- **A teammate's shared session reaches a pane only as validated NAMES.** The optional agent-sessions
+  integration lists `.claude/sessions/*/meta.json` from the repository, and everything in that folder
+  — its name included — was committed by someone else. A folder name passes `isSafeSharedSessionDir`
+  before it is joined into a path; a folder holding any link (or a non-regular summary/transcript)
+  is never listed; `sharedSessionContinuePrompt` (the only composer, which re-validates every name)
+  names only the exact files core found as regular files; and nothing from `meta.json`, the summary
+  or the transcript is ever interpolated into a prompt or a node title. The other direction is just
+  as fixed: "Share session to repo" types the agent's own push command as a CONSTANT — never
+  `--yes`, never a title (the skill reads trailing text as flags) — through the ⌘M composer's gates,
+  and it REFUSES a repository that ships its own copy of the skill or command: the agent resolves
+  the name, and the skill, not nodeterm, holds the confirmation. An optional integration with a
+  third-party tool stays inert (no row, no section, no reads past one presence check) where the
+  tool is not installed. CLAUDE.md § agent-sessions.
 
 - **A comment in the board log is text, never a trigger.** A board comment that @mentions a session
   is delivered to that agent (`deliverBoardCommentFromUi`, through the ordinary agent-messaging

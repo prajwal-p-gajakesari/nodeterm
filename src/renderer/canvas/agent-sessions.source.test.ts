@@ -32,16 +32,37 @@ describe('Canvas — Share session to repo', () => {
 describe('Canvas — Continue shared session', () => {
   it('composes the first prompt only from the validated folder name, spilled like every launch prompt', () => {
     const body = callback('continueSharedSession')
-    expect(body).toContain('async (dir: string): Promise<void> =>')
-    expect(body).toContain('const prompt = sharedSessionContinuePrompt(dir)')
+    expect(body).toContain('async (dir: string, transcriptFiles: readonly string[]): Promise<void> =>')
+    expect(body).toContain('const prompt = sharedSessionContinuePrompt(dir, transcriptFiles)')
     expect(body).toContain('await launchPromptFor(')
     expect(body).toContain('addAgentNode(')
-    // Nothing from meta.json or the session's files is read or typed here.
-    expect(body).not.toMatch(/\.title\b|\.author\b|summary\.md|transcript/)
+    // Nothing from meta.json or the session's files is read or typed here: only names pass through.
+    expect(body).not.toMatch(/\.title\b|\.author\b|summary\.md|transcript\.md|\bfs\.|\.read\(/)
   })
 
-  it('a palette row hands over the folder name and nothing else', () => {
-    expect(src).toContain('run: () => void continueSharedSession(shared.dir)')
+  it('a palette row hands over the folder name and the verified file names, nothing else', () => {
+    expect(src).toContain('run: () => void continueSharedSession(shared.dir, shared.transcriptFiles)')
     expect(src.match(/continueSharedSession\(/g)?.length).toBe(1)
+  })
+})
+
+describe('Canvas — inert unless agent-sessions is installed, and fresh wherever the row is offered', () => {
+  it('the ⌘K section reads nothing while hidden, and lists only once agent-sessions is known to be installed', () => {
+    const body = callback('refreshSharedSessions')
+    expect(body).toMatch(/if \(agentSessionsHidden\(\) \|\| !project\?\.cwd/)
+    expect(body.indexOf('anyAgentSessionsPresent()')).toBeGreaterThan(-1)
+    expect(body.indexOf('anyAgentSessionsPresent()')).toBeLessThan(body.indexOf('agentSessions.listShared('))
+  })
+
+  it('the sidebar row menu asks for its node’s facts too, like the canvas menu', () => {
+    const row = src.slice(src.indexOf('const onRowContextMenu = useCallback('))
+    const body = row.slice(0, row.indexOf('\n  // Stream live subagent'))
+    expect(body).toContain('refreshShareFacts(projectId, { nodes: shareFactsNodesOf(nodesRef.current), only: [id] })')
+  })
+
+  it('a held launch keeps the file its spilled prompt is read from', () => {
+    expect(callback('addAgentNode')).toContain(
+      'withLaunchBrief(queueControlLaunch(bound, [], extra.awaitSetupGroup), extra.promptFile)'
+    )
   })
 })

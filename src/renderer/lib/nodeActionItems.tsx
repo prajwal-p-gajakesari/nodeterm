@@ -44,7 +44,7 @@ import { claudeSwitchHostKey, claudeSwitchTargets } from '../canvas/claude-accou
 import { codexAccountSelectable } from '../canvas/codex-account-switch'
 import type { SessionSource } from '../session/session'
 import { useAgentStatus } from '../state/agentStatus'
-import { presenceFor, repoStateFor } from '../state/agentSessions'
+import { presenceFor, repoStateFor, shadowFor } from '../state/agentSessions'
 import { drivingNodeIds, useBrowserLease } from '../state/browserLease'
 import type { ModelDiscoveryStatus } from '../state/modelGateway'
 import { useSettings } from '../state/settings'
@@ -481,11 +481,13 @@ export function buildNodeActionSections(
 
 /**
  * "Share session to repo" — one row for a node whose agent agent-sessions can push from (claude,
- * codex, opencode, gemini, by base harness), shown even when it cannot run: DISABLED with the reason
- * (relay tab, SSH project, no folder / not a git repository, agent-sessions not installed for this
- * agent + account, or the agent not idle at its prompt). The click re-checks everything that can
- * change before it types (`sendShareCommand`). Hideable (`share-session`): it is a convenience, and a
- * user who never installs agent-sessions should be able to drop the disabled row.
+ * codex, opencode, gemini, by base harness) AND for whose agent + account agent-sessions is known to
+ * be installed. Absent (or not read yet) means no row at all: the integration is inert for users who
+ * do not have the tool. Otherwise it is shown even when it cannot run, DISABLED with the reason
+ * (relay tab, SSH project, no folder / not a git repository, the plugin switched off or unreadable,
+ * a repository copy of the skill or command, no session id yet, or the agent not idle at its
+ * prompt). The click re-checks everything that can change before it types (`sendShareCommand`).
+ * Hideable (`share-session`), which also switches off the ⌘K section and every read behind both.
  */
 function shareSessionRows(nodeId: string, ctx: NodeActionCtx, hidden: readonly string[]): MenuItem[] {
   if (isHidden('share-session', hidden)) return []
@@ -494,6 +496,7 @@ function shareSessionRows(nodeId: string, ctx: NodeActionCtx, hidden: readonly s
   const agent = agentSessionsAgentOf(agentId)
   if (!n || !agentId || !agent) return []
   const cwd = ctx.shareSession.projectCwd
+  const nodeCwd = typeof n.data.cwd === 'string' && n.data.cwd ? n.data.cwd : cwd
   const row = shareRowState({
     agentId,
     relay: ctx.sessionSource === 'relay',
@@ -501,6 +504,7 @@ function shareSessionRows(nodeId: string, ctx: NodeActionCtx, hidden: readonly s
     projectCwd: cwd,
     repo: cwd ? repoStateFor(cwd) : undefined,
     presence: presenceFor(agent, (n.data.accountId as string | undefined) || undefined),
+    shadow: shadowFor(agent, nodeCwd),
     status: useAgentStatus.getState().byId[nodeId] ?? {}
   })
   if (!row) return []

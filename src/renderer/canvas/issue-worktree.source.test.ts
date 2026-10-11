@@ -188,7 +188,7 @@ describe('the setup hold is one rule', () => {
     const add = between('const addAgentNode = useCallback(', 'const issueRef = normalizeIssueRef(extra?.issueRef)')
     expect(add).toContain('awaitSetupGroup?: string')
     expect(code(src)).toContain(
-      'const node = extra?.awaitSetupGroup ? queueControlLaunch(bound, [], extra.awaitSetupGroup) : bound'
+      'const node = extra?.awaitSetupGroup ? withLaunchBrief(queueControlLaunch(bound, [], extra.awaitSetupGroup), extra.promptFile) : bound'
     )
   })
 })
